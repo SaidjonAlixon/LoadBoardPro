@@ -7,6 +7,7 @@ import loadsRouter from "./loads";
 import analyticsRouter from "./analytics";
 import weeklyRouter from "./weekly";
 import notificationsRouter from "./notifications";
+import accountingRouter from "./accounting";
 
 const router: IRouter = Router();
 
@@ -18,6 +19,6 @@ router.use("/loads", loadsRouter);
 router.use("/analytics", analyticsRouter);
 router.use("/weekly", weeklyRouter);
 router.use("/notifications", notificationsRouter);
-router.use("/accounting", loadsRouter);
+router.use("/accounting", accountingRouter);
 
 export default router;
