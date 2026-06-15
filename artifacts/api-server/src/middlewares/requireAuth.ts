@@ -23,17 +23,23 @@ export const requireAuth = async (req: AuthRequest, res: Response, next: NextFun
   try {
     let user = await db.query.usersTable.findFirst({ where: eq(usersTable.clerkId, clerkId) });
     if (!user) {
-      // Just-in-time provisioning for new users
+      // Just-in-time provisioning — upsert on clerkId to avoid race-condition duplicates.
+      // Clerk sometimes delivers an empty email on the first request; handle gracefully.
       const email = (auth as any).sessionClaims?.email as string | undefined ?? "";
       const name = (auth as any).sessionClaims?.name as string | undefined ?? null;
-      const [created] = await db.insert(usersTable).values({
-        id: crypto.randomUUID(),
-        clerkId,
-        email,
-        name,
-        role: "dispatcher",
-      }).returning();
-      user = created;
+      const [upserted] = await db
+        .insert(usersTable)
+        .values({ id: crypto.randomUUID(), clerkId, email, name, role: "dispatcher" })
+        .onConflictDoUpdate({
+          target: usersTable.clerkId,
+          set: {
+            // refresh email/name if Clerk later provides them
+            email: email || undefined,
+            name: name || undefined,
+          },
+        })
+        .returning();
+      user = upserted;
     }
 
     req.clerkId = clerkId;

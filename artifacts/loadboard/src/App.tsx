@@ -17,6 +17,7 @@ import DriverDetail from "./pages/driver-detail";
 import Accounting from "./pages/accounting";
 import Notifications from "./pages/notifications";
 import Settings from "./pages/settings";
+import AdminPanel from "./pages/admin";
 import NotFound from "./pages/not-found";
 
 import Layout from "./components/layout";
@@ -191,6 +192,7 @@ function ClerkProviderWithRoutes() {
           <Route path="/accounting"><ProtectedRoute component={Accounting} /></Route>
           <Route path="/notifications"><ProtectedRoute component={Notifications} /></Route>
           <Route path="/settings"><ProtectedRoute component={Settings} /></Route>
+          <Route path="/admin"><ProtectedRoute component={AdminPanel} /></Route>
           <Route><Layout><NotFound /></Layout></Route>
         </Switch>
       </QueryClientProvider>

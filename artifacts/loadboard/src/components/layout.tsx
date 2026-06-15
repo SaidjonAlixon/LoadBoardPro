@@ -11,9 +11,10 @@ import {
   Settings, 
   LogOut,
   Menu,
-  X
+  X,
+  ShieldCheck,
 } from "lucide-react";
-import { useListNotifications } from "@workspace/api-client-react";
+import { useListNotifications, useGetMe } from "@workspace/api-client-react";
 import { Button } from "./ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 
@@ -31,7 +32,11 @@ export default function Layout({ children }: LayoutProps) {
   const { data: notifications } = useListNotifications({ unreadOnly: true });
   const unreadCount = notifications?.length || 0;
 
-  const navItems = [
+  // Fetch role for admin-only nav item
+  const { data: me } = useGetMe({});
+  const isAdmin = me?.role === "admin";
+
+  const baseNavItems = [
     { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
     { label: "Loads", href: "/loads", icon: Truck },
     { label: "Weekly View", href: "/weekly", icon: CalendarDays },
@@ -40,6 +45,36 @@ export default function Layout({ children }: LayoutProps) {
     { label: "Notifications", href: "/notifications", icon: Bell, badge: unreadCount },
     { label: "Settings", href: "/settings", icon: Settings },
   ];
+
+  const navItems = isAdmin
+    ? [
+        ...baseNavItems,
+        { label: "Admin Panel", href: "/admin", icon: ShieldCheck, badge: 0 },
+      ]
+    : baseNavItems;
+
+  const NavLink = ({ item, onClick }: { item: typeof navItems[0]; onClick?: () => void }) => {
+    const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
+    return (
+      <Link
+        href={item.href}
+        onClick={onClick}
+        className={`flex items-center space-x-3 px-3 py-2.5 rounded-md transition-colors ${
+          isActive
+            ? "bg-[#2196F3] text-white"
+            : "text-blue-100 hover:bg-[#2A4D70] hover:text-white"
+        }`}
+      >
+        <item.icon size={18} />
+        <span className="flex-1 font-medium text-sm">{item.label}</span>
+        {item.badge ? (
+          <span className="bg-[#E65100] text-white text-xs font-bold px-2 py-0.5 rounded-full">
+            {item.badge}
+          </span>
+        ) : null}
+      </Link>
+    );
+  };
 
   return (
     <div className="flex h-screen bg-[#F5F7FA]">
@@ -60,20 +95,9 @@ export default function Layout({ children }: LayoutProps) {
         </div>
 
         <nav className="flex-1 px-4 py-6 space-y-1">
-          {navItems.map((item) => {
-            const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
-            return (
-              <Link key={item.href} href={item.href} className={`flex items-center space-x-3 px-3 py-2.5 rounded-md transition-colors ${isActive ? 'bg-[#2196F3] text-white' : 'text-blue-100 hover:bg-[#2A4D70] hover:text-white'}`}>
-                <item.icon size={18} />
-                <span className="flex-1 font-medium text-sm">{item.label}</span>
-                {item.badge ? (
-                  <span className="bg-[#E65100] text-white text-xs font-bold px-2 py-0.5 rounded-full">
-                    {item.badge}
-                  </span>
-                ) : null}
-              </Link>
-            );
-          })}
+          {navItems.map((item) => (
+            <NavLink key={item.href} item={item} />
+          ))}
         </nav>
 
         <div className="p-4 border-t border-[#2A4D70]">
@@ -86,9 +110,15 @@ export default function Layout({ children }: LayoutProps) {
             </Avatar>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-white truncate">{user?.fullName || "User"}</p>
-              <p className="text-xs text-blue-200 truncate capitalize">{user?.publicMetadata?.role as string || "Dispatcher"}</p>
+              <p className="text-xs text-blue-200 truncate capitalize">
+                {me?.role || (user?.publicMetadata?.role as string) || "Dispatcher"}
+              </p>
             </div>
-            <button onClick={() => signOut({ redirectUrl: "/" })} className="text-blue-200 hover:text-white transition-colors" data-testid="button-logout">
+            <button
+              onClick={() => signOut({ redirectUrl: "/" })}
+              className="text-blue-200 hover:text-white transition-colors"
+              data-testid="button-logout"
+            >
               <LogOut size={18} />
             </button>
           </div>
@@ -97,11 +127,18 @@ export default function Layout({ children }: LayoutProps) {
 
       {/* Mobile Sidebar overlay */}
       {isMobileMenuOpen && (
-        <div className="md:hidden fixed inset-0 z-40 bg-black/50" onClick={() => setIsMobileMenuOpen(false)} />
+        <div
+          className="md:hidden fixed inset-0 z-40 bg-black/50"
+          onClick={() => setIsMobileMenuOpen(false)}
+        />
       )}
 
       {/* Mobile Sidebar */}
-      <div className={`md:hidden fixed inset-y-0 left-0 z-50 w-64 bg-[#1A3C5E] transform transition-transform duration-200 ease-in-out ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+      <div
+        className={`md:hidden fixed inset-y-0 left-0 z-50 w-64 bg-[#1A3C5E] transform transition-transform duration-200 ease-in-out ${
+          isMobileMenuOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
         <div className="flex items-center justify-between p-4 border-b border-[#2A4D70]">
           <span className="font-bold text-white text-lg">LoadBoard Pro</span>
           <button onClick={() => setIsMobileMenuOpen(false)} className="text-blue-200 hover:text-white">
@@ -110,20 +147,14 @@ export default function Layout({ children }: LayoutProps) {
         </div>
         <nav className="p-4 space-y-1">
           {navItems.map((item) => (
-            <Link key={item.href} href={item.href} className={`flex items-center space-x-3 px-3 py-2.5 rounded-md text-white ${location === item.href ? 'bg-[#2196F3]' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-              <item.icon size={18} />
-              <span className="flex-1">{item.label}</span>
-              {item.badge ? (
-                <span className="bg-[#E65100] text-white text-xs px-2 py-0.5 rounded-full">{item.badge}</span>
-              ) : null}
-            </Link>
+            <NavLink key={item.href} item={item} onClick={() => setIsMobileMenuOpen(false)} />
           ))}
         </nav>
       </div>
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Header Mobile */}
+        {/* Mobile Header */}
         <header className="md:hidden bg-white border-b border-gray-200 p-4 flex items-center justify-between shadow-sm z-10">
           <button onClick={() => setIsMobileMenuOpen(true)} className="text-gray-500 hover:text-[#1A3C5E]">
             <Menu size={24} />
@@ -141,15 +172,20 @@ export default function Layout({ children }: LayoutProps) {
             </Link>
             <Avatar className="h-8 w-8">
               <AvatarImage src={user?.imageUrl} />
-              <AvatarFallback className="bg-[#1A3C5E] text-white">{user?.firstName?.charAt(0) || "U"}</AvatarFallback>
+              <AvatarFallback className="bg-[#1A3C5E] text-white">
+                {user?.firstName?.charAt(0) || "U"}
+              </AvatarFallback>
             </Avatar>
           </div>
         </header>
 
-        {/* Desktop Header Top Bar */}
+        {/* Desktop Top Bar */}
         <header className="hidden md:flex bg-white border-b border-gray-200 h-16 items-center justify-end px-6 shadow-sm z-10">
           <div className="flex items-center space-x-4">
-            <Link href="/notifications" className="relative p-2 text-gray-500 hover:text-[#1A3C5E] hover:bg-gray-50 rounded-full transition-colors">
+            <Link
+              href="/notifications"
+              className="relative p-2 text-gray-500 hover:text-[#1A3C5E] hover:bg-gray-50 rounded-full transition-colors"
+            >
               <Bell size={20} />
               {unreadCount > 0 && (
                 <span className="absolute top-1.5 right-1.5 flex h-4 w-4">

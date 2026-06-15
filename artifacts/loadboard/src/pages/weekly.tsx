@@ -34,10 +34,10 @@ function KpiCard({ label, value, icon: Icon, color }: { label: string; value: st
   );
 }
 
-function DriverBlock({ block }: { block: NonNullable<ReturnType<typeof useGetWeeklyView>["data"]>["drivers"][0] }) {
+function DriverBlock({ block }: { block: any }) {
   const [expanded, setExpanded] = useState(true);
-  const totalGross = block.loads.reduce((s, l) => s + l.rate + l.reimbursement, 0);
-  const totalMiles = block.loads.reduce((s, l) => s + l.mileage, 0);
+  const totalGross = (block.loads as any[]).reduce((s: number, l: any) => s + (l.rate ?? 0) + (l.reimbursement ?? 0), 0);
+  const totalMiles = (block.loads as any[]).reduce((s: number, l: any) => s + (l.mileage ?? 0), 0);
 
   return (
     <Card className="overflow-hidden">
@@ -93,7 +93,7 @@ function DriverBlock({ block }: { block: NonNullable<ReturnType<typeof useGetWee
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {block.loads.map((load) => {
+              {(block.loads as any[]).map((load: any) => {
                 const biDiff = load.brokerPaid !== null && load.invoicedAmount !== null
                   ? load.brokerPaid - load.invoicedAmount
                   : null;
@@ -132,7 +132,7 @@ export default function WeeklyView() {
 
   const activeWeek = selectedWeek ?? (weeks?.[0]?.weekStart ?? null);
   const { data: weekData, isLoading: weekLoading } = useGetWeeklyView(activeWeek ?? "", {
-    query: { enabled: !!activeWeek },
+    query: { enabled: !!activeWeek } as any,
   });
 
   const formatWeekLabel = (weekStart: string) => {
@@ -176,7 +176,7 @@ export default function WeeklyView() {
       ) : kpi ? (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
           <KpiCard label="Total Gross" value={fmt(kpi.totalGross)} icon={DollarSign} color="bg-blue-50 text-blue-600" />
-          <KpiCard label="Total Miles" value={kpi.totalMileage.toLocaleString()} icon={Route} color="bg-indigo-50 text-indigo-600" />
+          <KpiCard label="Total Miles" value={(kpi.totalMileage ?? 0).toLocaleString()} icon={Route} color="bg-indigo-50 text-indigo-600" />
           <KpiCard label="Avg RPM" value={fmtRpm(kpi.avgRpm)} icon={TrendingUp} color="bg-green-50 text-green-600" />
           <KpiCard label="Active Drivers" value={String(kpi.activeDrivers)} icon={Users} color="bg-orange-50 text-orange-600" />
           <KpiCard label="OO / CD" value={`${kpi.ooCount} / ${kpi.cdCount}`} icon={Truck} color="bg-purple-50 text-purple-600" />
