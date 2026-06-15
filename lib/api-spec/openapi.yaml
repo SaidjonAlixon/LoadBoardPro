@@ -3,20 +3,34 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: LoadBoard Pro API specification
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: users
+    description: User management
+  - name: drivers
+    description: Driver management
+  - name: brokers
+    description: Broker management
+  - name: loads
+    description: Load management
+  - name: analytics
+    description: KPI and analytics
+  - name: weekly
+    description: Weekly view
+  - name: notifications
+    description: Notification management
+
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,6 +38,577 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  # ─── USERS ────────────────────────────────────────────────────────────────
+  /users/me:
+    get:
+      operationId: getMe
+      tags: [users]
+      summary: Get current user profile
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Unauthorized
+    patch:
+      operationId: updateMe
+      tags: [users]
+      summary: Update current user profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserUpdate"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      summary: List all users (admin only)
+      responses:
+        "200":
+          description: Users list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+    post:
+      operationId: createUser
+      tags: [users]
+      summary: Create a user (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /users/{id}:
+    patch:
+      operationId: updateUser
+      tags: [users]
+      summary: Update a user
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserUpdate"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  # ─── DRIVERS ──────────────────────────────────────────────────────────────
+  /drivers:
+    get:
+      operationId: listDrivers
+      tags: [drivers]
+      summary: List all drivers
+      parameters:
+        - name: isActive
+          in: query
+          schema:
+            type: boolean
+        - name: driverType
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Drivers list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Driver"
+    post:
+      operationId: createDriver
+      tags: [drivers]
+      summary: Create a driver
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DriverInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Driver"
+
+  /drivers/{id}:
+    get:
+      operationId: getDriver
+      tags: [drivers]
+      summary: Get driver details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Driver
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DriverDetail"
+    patch:
+      operationId: updateDriver
+      tags: [drivers]
+      summary: Update a driver
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DriverUpdate"
+      responses:
+        "200":
+          description: Updated driver
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Driver"
+    delete:
+      operationId: deleteDriver
+      tags: [drivers]
+      summary: Archive a driver (soft delete)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Archived
+
+  # ─── BROKERS ──────────────────────────────────────────────────────────────
+  /brokers:
+    get:
+      operationId: listBrokers
+      tags: [brokers]
+      summary: List all brokers
+      responses:
+        "200":
+          description: Brokers list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Broker"
+    post:
+      operationId: createBroker
+      tags: [brokers]
+      summary: Create a broker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BrokerInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Broker"
+
+  /brokers/{id}:
+    patch:
+      operationId: updateBroker
+      tags: [brokers]
+      summary: Update a broker
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BrokerUpdate"
+      responses:
+        "200":
+          description: Updated broker
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Broker"
+
+  # ─── LOADS ────────────────────────────────────────────────────────────────
+  /loads:
+    get:
+      operationId: listLoads
+      tags: [loads]
+      summary: List loads with filtering and pagination
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: driverId
+          in: query
+          schema:
+            type: string
+        - name: dispatcherId
+          in: query
+          schema:
+            type: string
+        - name: brokerId
+          in: query
+          schema:
+            type: string
+        - name: weekStart
+          in: query
+          schema:
+            type: string
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Loads list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoadsPage"
+    post:
+      operationId: createLoad
+      tags: [loads]
+      summary: Create a new load
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoadInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Load"
+
+  /loads/{id}:
+    get:
+      operationId: getLoad
+      tags: [loads]
+      summary: Get load details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Load
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Load"
+    patch:
+      operationId: updateLoad
+      tags: [loads]
+      summary: Update a load
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoadUpdate"
+      responses:
+        "200":
+          description: Updated load
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Load"
+    delete:
+      operationId: deleteLoad
+      tags: [loads]
+      summary: Soft delete a load (admin only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  # ─── ANALYTICS / KPI ──────────────────────────────────────────────────────
+  /analytics/kpi:
+    get:
+      operationId: getKpi
+      tags: [analytics]
+      summary: Get KPI metrics
+      parameters:
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+        - name: dispatcherId
+          in: query
+          schema:
+            type: string
+        - name: driverId
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: KPI metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KpiMetrics"
+
+  /analytics/ranking:
+    get:
+      operationId: getDispatcherRanking
+      tags: [analytics]
+      summary: Get dispatcher performance ranking
+      parameters:
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Dispatcher ranking
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DispatcherRank"
+
+  /analytics/status-breakdown:
+    get:
+      operationId: getStatusBreakdown
+      tags: [analytics]
+      summary: Get load status counts for donut chart
+      parameters:
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Status breakdown
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StatusCount"
+
+  # ─── WEEKLY VIEW ──────────────────────────────────────────────────────────
+  /weekly:
+    get:
+      operationId: listWeeks
+      tags: [weekly]
+      summary: List available week periods
+      responses:
+        "200":
+          description: Weeks list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WeekSummary"
+
+  /weekly/{weekStart}:
+    get:
+      operationId: getWeeklyView
+      tags: [weekly]
+      summary: Get loads grouped by driver for a week
+      parameters:
+        - name: weekStart
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Weekly view
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WeeklyView"
+
+  # ─── ACCOUNTING ───────────────────────────────────────────────────────────
+  /accounting/summary:
+    get:
+      operationId: getAccountingSummary
+      tags: [loads]
+      summary: Get accounting summary metrics
+      parameters:
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Accounting summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountingSummary"
+
+  # ─── NOTIFICATIONS ────────────────────────────────────────────────────────
+  /notifications:
+    get:
+      operationId: listNotifications
+      tags: [notifications]
+      summary: List notifications for current user
+      parameters:
+        - name: unreadOnly
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Notifications
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Notification"
+
+  /notifications/{id}/read:
+    patch:
+      operationId: markNotificationRead
+      tags: [notifications]
+      summary: Mark a notification as read
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationReadUpdate"
+      responses:
+        "200":
+          description: Updated notification
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+
+  /notifications/read-all:
+    patch:
+      operationId: markAllNotificationsRead
+      tags: [notifications]
+      summary: Mark all notifications as read
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MarkAllReadInput"
+      responses:
+        "200":
+          description: Done
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +619,510 @@ components:
       required:
         - status
 
+    # ── USER ────────────────────────────────────────────────────────────────
+    User:
+      type: object
+      required: [id, clerkId, email, role]
+      properties:
+        id:
+          type: string
+        clerkId:
+          type: string
+        email:
+          type: string
+        name:
+          type: ["string", "null"]
+        role:
+          type: string
+          enum: [admin, dispatcher, accounting, driver]
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+
+    UserInput:
+      type: object
+      required: [email, role]
+      properties:
+        email:
+          type: string
+        name:
+          type: ["string", "null"]
+        role:
+          type: string
+          enum: [admin, dispatcher, accounting, driver]
+
+    UserUpdate:
+      type: object
+      properties:
+        name:
+          type: ["string", "null"]
+        role:
+          type: string
+          enum: [admin, dispatcher, accounting, driver]
+        isActive:
+          type: boolean
+
+    # ── DRIVER ──────────────────────────────────────────────────────────────
+    Driver:
+      type: object
+      required: [id, fullName, driverType, isActive]
+      properties:
+        id:
+          type: string
+        fullName:
+          type: string
+        driverType:
+          type: string
+          enum: [OO, CD, Lease]
+        phone:
+          type: ["string", "null"]
+        email:
+          type: ["string", "null"]
+        truckNumber:
+          type: ["string", "null"]
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+
+    DriverDetail:
+      type: object
+      required: [id, fullName, driverType, isActive]
+      properties:
+        id:
+          type: string
+        fullName:
+          type: string
+        driverType:
+          type: string
+          enum: [OO, CD, Lease]
+        phone:
+          type: ["string", "null"]
+        email:
+          type: ["string", "null"]
+        truckNumber:
+          type: ["string", "null"]
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+        stats:
+          $ref: "#/components/schemas/DriverStats"
+        recentLoads:
+          type: array
+          items:
+            $ref: "#/components/schemas/Load"
+
+    DriverStats:
+      type: object
+      properties:
+        totalLoads:
+          type: integer
+        totalGross:
+          type: number
+        avgRpm:
+          type: number
+        lastActivityDate:
+          type: ["string", "null"]
+
+    DriverInput:
+      type: object
+      required: [fullName, driverType]
+      properties:
+        fullName:
+          type: string
+        driverType:
+          type: string
+          enum: [OO, CD, Lease]
+        phone:
+          type: ["string", "null"]
+        email:
+          type: ["string", "null"]
+        truckNumber:
+          type: ["string", "null"]
+
+    DriverUpdate:
+      type: object
+      properties:
+        fullName:
+          type: string
+        driverType:
+          type: string
+          enum: [OO, CD, Lease]
+        phone:
+          type: ["string", "null"]
+        email:
+          type: ["string", "null"]
+        truckNumber:
+          type: ["string", "null"]
+        isActive:
+          type: boolean
+
+    # ── BROKER ──────────────────────────────────────────────────────────────
+    Broker:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        mcNumber:
+          type: ["string", "null"]
+        contact:
+          type: ["string", "null"]
+        email:
+          type: ["string", "null"]
+        phone:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+
+    BrokerInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        mcNumber:
+          type: ["string", "null"]
+        contact:
+          type: ["string", "null"]
+        email:
+          type: ["string", "null"]
+        phone:
+          type: ["string", "null"]
+
+    BrokerUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        mcNumber:
+          type: ["string", "null"]
+        contact:
+          type: ["string", "null"]
+        email:
+          type: ["string", "null"]
+        phone:
+          type: ["string", "null"]
+
+    # ── LOAD ────────────────────────────────────────────────────────────────
+    Load:
+      type: object
+      required: [id, loadNumber, puDate, delDate, originCity, originState, destCity, destState, mileage, rate, status, weekStart]
+      properties:
+        id:
+          type: string
+        loadNumber:
+          type: string
+        driverId:
+          type: ["string", "null"]
+        driver:
+          $ref: "#/components/schemas/Driver"
+        dispatcherId:
+          type: ["string", "null"]
+        dispatcher:
+          $ref: "#/components/schemas/User"
+        brokerId:
+          type: ["string", "null"]
+        broker:
+          $ref: "#/components/schemas/Broker"
+        puDate:
+          type: string
+        delDate:
+          type: string
+        originCity:
+          type: string
+        originState:
+          type: string
+        destCity:
+          type: string
+        destState:
+          type: string
+        mileage:
+          type: number
+        rate:
+          type: number
+        rpm:
+          type: ["number", "null"]
+        status:
+          type: string
+          enum: [Booked, PickedUp, Delivered, Canceled]
+        reimbursement:
+          type: number
+        dispatchNotes:
+          type: ["string", "null"]
+        invoicedAmount:
+          type: ["number", "null"]
+        brokerPaid:
+          type: ["number", "null"]
+        notes:
+          type: ["string", "null"]
+        weekStart:
+          type: string
+        irDiff:
+          type: ["number", "null"]
+        biDiff:
+          type: ["number", "null"]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    LoadInput:
+      type: object
+      required: [loadNumber, puDate, delDate, originCity, originState, destCity, destState, mileage, rate, weekStart]
+      properties:
+        loadNumber:
+          type: string
+        driverId:
+          type: ["string", "null"]
+        dispatcherId:
+          type: ["string", "null"]
+        brokerId:
+          type: ["string", "null"]
+        puDate:
+          type: string
+        delDate:
+          type: string
+        originCity:
+          type: string
+        originState:
+          type: string
+        destCity:
+          type: string
+        destState:
+          type: string
+        mileage:
+          type: number
+        rate:
+          type: number
+        status:
+          type: string
+          enum: [Booked, PickedUp, Delivered, Canceled]
+        reimbursement:
+          type: number
+        dispatchNotes:
+          type: ["string", "null"]
+        notes:
+          type: ["string", "null"]
+        weekStart:
+          type: string
+
+    LoadUpdate:
+      type: object
+      properties:
+        loadNumber:
+          type: string
+        driverId:
+          type: ["string", "null"]
+        dispatcherId:
+          type: ["string", "null"]
+        brokerId:
+          type: ["string", "null"]
+        puDate:
+          type: string
+        delDate:
+          type: string
+        originCity:
+          type: string
+        originState:
+          type: string
+        destCity:
+          type: string
+        destState:
+          type: string
+        mileage:
+          type: number
+        rate:
+          type: number
+        status:
+          type: string
+          enum: [Booked, PickedUp, Delivered, Canceled]
+        reimbursement:
+          type: number
+        dispatchNotes:
+          type: ["string", "null"]
+        invoicedAmount:
+          type: ["number", "null"]
+        brokerPaid:
+          type: ["number", "null"]
+        notes:
+          type: ["string", "null"]
+
+    LoadsPage:
+      type: object
+      required: [data, total, page, limit]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Load"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+
+    # ── ANALYTICS ───────────────────────────────────────────────────────────
+    KpiMetrics:
+      type: object
+      required: [totalGross, totalMiles, avgRpm, activeLoads, brokerPaidTotal, unpaidDiff]
+      properties:
+        totalGross:
+          type: number
+        totalMiles:
+          type: number
+        avgRpm:
+          type: number
+        activeLoads:
+          type: integer
+        brokerPaidTotal:
+          type: number
+        unpaidDiff:
+          type: number
+        totalLoads:
+          type: integer
+        deliveredLoads:
+          type: integer
+
+    DispatcherRank:
+      type: object
+      required: [dispatcherId, dispatcherName, gross, miles, loads, avgRpm, kpiScore]
+      properties:
+        dispatcherId:
+          type: string
+        dispatcherName:
+          type: string
+        gross:
+          type: number
+        miles:
+          type: number
+        loads:
+          type: integer
+        avgRpm:
+          type: number
+        kpiScore:
+          type: number
+
+    StatusCount:
+      type: object
+      required: [status, count]
+      properties:
+        status:
+          type: string
+        count:
+          type: integer
+
+    # ── WEEKLY ──────────────────────────────────────────────────────────────
+    WeekSummary:
+      type: object
+      required: [weekStart, weekEnd, loadCount, totalGross]
+      properties:
+        weekStart:
+          type: string
+        weekEnd:
+          type: string
+        loadCount:
+          type: integer
+        totalGross:
+          type: number
+
+    WeeklyView:
+      type: object
+      required: [weekStart, weekEnd, drivers, kpi]
+      properties:
+        weekStart:
+          type: string
+        weekEnd:
+          type: string
+        drivers:
+          type: array
+          items:
+            $ref: "#/components/schemas/WeeklyDriverBlock"
+        kpi:
+          $ref: "#/components/schemas/WeeklyKpi"
+
+    WeeklyDriverBlock:
+      type: object
+      required: [driver, loads, totalGross, totalMiles]
+      properties:
+        driver:
+          $ref: "#/components/schemas/Driver"
+        loads:
+          type: array
+          items:
+            $ref: "#/components/schemas/Load"
+        totalGross:
+          type: number
+        totalMiles:
+          type: number
+        totalReimbursement:
+          type: number
+
+    WeeklyKpi:
+      type: object
+      properties:
+        totalGross:
+          type: number
+        totalMileage:
+          type: number
+        avgRpm:
+          type: number
+        activeDrivers:
+          type: integer
+        totalReimbursement:
+          type: number
+        ooCount:
+          type: integer
+        cdCount:
+          type: integer
+        grossPerDriver:
+          type: number
+
+    # ── ACCOUNTING ──────────────────────────────────────────────────────────
+    AccountingSummary:
+      type: object
+      properties:
+        totalInvoiced:
+          type: number
+        brokerPaidThisWeek:
+          type: number
+        outstanding:
+          type: number
+        diffIssues:
+          type: integer
+
+    # ── NOTIFICATIONS ────────────────────────────────────────────────────────
+    Notification:
+      type: object
+      required: [id, userId, text, isRead, createdAt]
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        text:
+          type: string
+        isRead:
+          type: boolean
+        loadId:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+
+    NotificationReadUpdate:
+      type: object
+      required: [isRead]
+      properties:
+        isRead:
+          type: boolean
+
+    MarkAllReadInput:
+      type: object
+      properties:
+        placeholder:
+          type: ["string", "null"]
