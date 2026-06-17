@@ -6,7 +6,7 @@
   "outputDirectory": "artifacts/loadboard/dist/public",
   "framework": null,
   "functions": {
-    "api/index.ts": {
+    "api/index.js": {
       "maxDuration": 30,
       "includeFiles": "artifacts/api-server/dist/**"
     }
