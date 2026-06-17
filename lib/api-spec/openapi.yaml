@@ -3,7 +3,7 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: LoadBoard Pro API specification
+  description: LoadBoardPro API specification
 servers:
   - url: /api
     description: Base API path
@@ -128,6 +128,23 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/User"
+    delete:
+      operationId: deleteUser
+      tags: [users]
+      summary: Permanently delete a user (admin only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: User deleted
+        "400":
+          description: Cannot delete (self or last admin)
+        "404":
+          description: Not found
 
   # ─── DRIVERS ──────────────────────────────────────────────────────────────
   /drivers:
@@ -622,11 +639,9 @@ components:
     # ── USER ────────────────────────────────────────────────────────────────
     User:
       type: object
-      required: [id, clerkId, email, role]
+      required: [id, email, role]
       properties:
         id:
-          type: string
-        clerkId:
           type: string
         email:
           type: string
@@ -849,7 +864,7 @@ components:
           type: ["number", "null"]
         status:
           type: string
-          enum: [Booked, PickedUp, Delivered, Canceled]
+          enum: [Booked, InQM, Delivered, Canceled, Completed, NeedRevRC, Issue, Checked, Invoiced, Reinvoiced, BrokerPaid]
         reimbursement:
           type: number
         dispatchNotes:
@@ -901,7 +916,7 @@ components:
           type: number
         status:
           type: string
-          enum: [Booked, PickedUp, Delivered, Canceled]
+          enum: [Booked, InQM, Delivered, Canceled, Completed, NeedRevRC, Issue, Checked, Invoiced, Reinvoiced, BrokerPaid]
         reimbursement:
           type: number
         dispatchNotes:
@@ -940,7 +955,7 @@ components:
           type: number
         status:
           type: string
-          enum: [Booked, PickedUp, Delivered, Canceled]
+          enum: [Booked, InQM, Delivered, Canceled, Completed, NeedRevRC, Issue, Checked, Invoiced, Reinvoiced, BrokerPaid]
         reimbursement:
           type: number
         dispatchNotes:

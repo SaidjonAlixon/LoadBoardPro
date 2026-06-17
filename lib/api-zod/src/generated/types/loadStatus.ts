@@ -11,7 +11,14 @@ export type LoadStatus = typeof LoadStatus[keyof typeof LoadStatus];
 
 export const LoadStatus = {
   Booked: 'Booked',
-  PickedUp: 'PickedUp',
+  InQM: 'InQM',
   Delivered: 'Delivered',
   Canceled: 'Canceled',
+  Completed: 'Completed',
+  NeedRevRC: 'NeedRevRC',
+  Issue: 'Issue',
+  Checked: 'Checked',
+  Invoiced: 'Invoiced',
+  Reinvoiced: 'Reinvoiced',
+  BrokerPaid: 'BrokerPaid',
 } as const;

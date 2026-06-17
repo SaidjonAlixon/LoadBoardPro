@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, loadsTable } from "@workspace/db";
-import { eq, and, gte, lte, sql } from "drizzle-orm";
+import { eq, and, gte, lte, sql, inArray } from "drizzle-orm";
 import { requireAuth } from "../middlewares/requireAuth";
 
 const router = Router();
@@ -8,7 +8,10 @@ const router = Router();
 // GET /api/accounting/summary
 router.get("/summary", requireAuth, async (req, res) => {
   const { dateFrom, dateTo } = req.query as Record<string, string>;
-  const conditions = [eq(loadsTable.isDeleted, false), eq(loadsTable.status, "Delivered")];
+  const conditions = [
+    eq(loadsTable.isDeleted, false),
+    inArray(loadsTable.status, ["Delivered", "Completed"]),
+  ];
   if (dateFrom) conditions.push(gte(loadsTable.puDate, dateFrom));
   if (dateTo) conditions.push(lte(loadsTable.puDate, dateTo));
 

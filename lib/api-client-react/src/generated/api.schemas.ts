@@ -25,6 +25,8 @@ export interface User {
   email: string;
   /** @nullable */
   name?: string | null;
+  /** @nullable */
+  avatarKey?: string | null;
   role: UserRole;
   isActive?: boolean;
   createdAt?: string;
@@ -123,9 +125,16 @@ export type LoadStatus = typeof LoadStatus[keyof typeof LoadStatus];
 
 export const LoadStatus = {
   Booked: 'Booked',
-  PickedUp: 'PickedUp',
+  InQM: 'InQM',
   Delivered: 'Delivered',
   Canceled: 'Canceled',
+  Completed: 'Completed',
+  NeedRevRC: 'NeedRevRC',
+  Issue: 'Issue',
+  Checked: 'Checked',
+  Invoiced: 'Invoiced',
+  Reinvoiced: 'Reinvoiced',
+  BrokerPaid: 'BrokerPaid',
 } as const;
 
 export interface Load {
@@ -161,6 +170,7 @@ export interface Load {
   /** @nullable */
   notes?: string | null;
   weekStart: string;
+  sortOrder?: number;
   /** @nullable */
   irDiff?: number | null;
   /** @nullable */
@@ -255,9 +265,12 @@ export type LoadInputStatus = typeof LoadInputStatus[keyof typeof LoadInputStatu
 
 export const LoadInputStatus = {
   Booked: 'Booked',
-  PickedUp: 'PickedUp',
+  InQM: 'InQM',
   Delivered: 'Delivered',
   Canceled: 'Canceled',
+  Completed: 'Completed',
+  NeedRevRC: 'NeedRevRC',
+  Issue: 'Issue',
 } as const;
 
 export interface LoadInput {
@@ -290,9 +303,16 @@ export type LoadUpdateStatus = typeof LoadUpdateStatus[keyof typeof LoadUpdateSt
 
 export const LoadUpdateStatus = {
   Booked: 'Booked',
-  PickedUp: 'PickedUp',
+  InQM: 'InQM',
   Delivered: 'Delivered',
   Canceled: 'Canceled',
+  Completed: 'Completed',
+  NeedRevRC: 'NeedRevRC',
+  Issue: 'Issue',
+  Checked: 'Checked',
+  Invoiced: 'Invoiced',
+  Reinvoiced: 'Reinvoiced',
+  BrokerPaid: 'BrokerPaid',
 } as const;
 
 export interface LoadUpdate {
@@ -339,6 +359,10 @@ export interface KpiMetrics {
   unpaidDiff: number;
   totalLoads?: number;
   deliveredLoads?: number;
+  grossPerDriver?: number;
+  totalDrivers?: number;
+  driversOnLoad?: number;
+  driversEmpty?: number;
 }
 
 export interface DispatcherRank {
@@ -371,6 +395,12 @@ export interface WeeklyDriverBlock {
   totalReimbursement?: number;
 }
 
+export interface WeeklyDriverStatus {
+  totalDrivers?: number;
+  driversOnLoad?: number;
+  driversEmpty?: number;
+}
+
 export interface WeeklyKpi {
   totalGross?: number;
   totalMileage?: number;
@@ -386,6 +416,9 @@ export interface WeeklyView {
   weekStart: string;
   weekEnd: string;
   drivers: WeeklyDriverBlock[];
+  driversOnLoadToday?: WeeklyDriverBlock[];
+  driversEmptyToday?: WeeklyDriverBlock[];
+  driverStatus?: WeeklyDriverStatus;
   kpi: WeeklyKpi;
 }
 
@@ -436,6 +469,7 @@ limit?: number;
 export type GetKpiParams = {
 dateFrom?: string;
 dateTo?: string;
+weekStart?: string;
 dispatcherId?: string;
 driverId?: string;
 };
@@ -443,11 +477,15 @@ driverId?: string;
 export type GetDispatcherRankingParams = {
 dateFrom?: string;
 dateTo?: string;
+weekStart?: string;
+dispatcherId?: string;
 };
 
 export type GetStatusBreakdownParams = {
 dateFrom?: string;
 dateTo?: string;
+weekStart?: string;
+dispatcherId?: string;
 };
 
 export type GetAccountingSummaryParams = {

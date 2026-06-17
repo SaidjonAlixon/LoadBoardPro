@@ -1,6 +1,6 @@
 kind = "web"
 previewPath = "/"
-title = "LoadBoard Pro"
+title = "LoadBoardPro"
 version = "1.0.0"
 id = "artifacts/loadboard"
 router = "path"

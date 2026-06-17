@@ -1,12 +1,11 @@
 import { useState, useEffect } from "react";
-import { useListLoads, useListDrivers, useListBrokers } from "@workspace/api-client-react";
+import { useListLoads, useListDrivers, useListBrokers, useGetMe } from "@workspace/api-client-react";
+import { resolveBrokerIdByName } from "@/lib/resolve-broker";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Label } from "@/components/ui/label";
-import { LoadStatusBadge } from "@/components/load-status-badge";
 import {
   Dialog,
   DialogContent,
@@ -22,8 +21,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Search, Plus, Filter, AlertTriangle, X } from "lucide-react";
-import { useLocation } from "wouter";
+import { Search, Plus, Filter, X, AlertTriangle } from "lucide-react";
+import { useI18n, translateLoadStatus } from "@/lib/i18n";
+import { DISPATCHER_LOAD_STATUSES } from "@/lib/load-statuses";
+import { LoadsSpreadsheet } from "@/components/loads-spreadsheet";
 
 const US_STATES = [
   "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
@@ -32,8 +33,11 @@ const US_STATES = [
   "VA","WA","WV","WI","WY",
 ];
 
-const fmt = (n: number = 0) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
+const DRIVER_TYPE_KEYS: Record<string, string> = {
+  OO: "drivers.ooShort",
+  CD: "drivers.cdShort",
+  Lease: "drivers.lease",
+};
 
 function getMondayOfWeek(dateStr: string): string {
   if (!dateStr) return "";
@@ -48,7 +52,7 @@ function getMondayOfWeek(dateStr: string): string {
 interface LoadForm {
   loadNumber: string;
   driverId: string;
-  brokerId: string;
+  brokerName: string;
   puDate: string;
   delDate: string;
   originCity: string;
@@ -66,7 +70,7 @@ interface LoadForm {
 const EMPTY: LoadForm = {
   loadNumber: "",
   driverId: "",
-  brokerId: "",
+  brokerName: "",
   puDate: "",
   delDate: "",
   originCity: "",
@@ -81,21 +85,163 @@ const EMPTY: LoadForm = {
   weekStart: "",
 };
 
+const EMPTY_DRIVER: DriverQuickForm = {
+  fullName: "",
+  driverType: "CD",
+  phone: "",
+  email: "",
+  truckNumber: "",
+};
+
+interface DriverQuickForm {
+  fullName: string;
+  driverType: "OO" | "CD" | "Lease";
+  phone: string;
+  email: string;
+  truckNumber: string;
+}
+
+function QuickAddDriverDialog({
+  open,
+  onClose,
+  onCreated,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onCreated: (driverId: string) => void;
+}) {
+  const { t } = useI18n();
+  const [form, setForm] = useState<DriverQuickForm>(EMPTY_DRIVER);
+  const qc = useQueryClient();
+
+  useEffect(() => {
+    if (!open) setForm(EMPTY_DRIVER);
+  }, [open]);
+
+  const mutation = useMutation({
+    mutationFn: async (data: DriverQuickForm) => {
+      const res = await fetch("/api/drivers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || t("drivers.saveFailed"));
+      }
+      return res.json();
+    },
+    onSuccess: (driver: { id: string }) => {
+      void qc.invalidateQueries({ queryKey: ["/api/drivers"] });
+      onCreated(driver.id);
+      onClose();
+    },
+  });
+
+  const set =
+    (k: keyof DriverQuickForm) => (e: React.ChangeEvent<HTMLInputElement>) =>
+      setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="text-foreground">{t("drivers.addDriver")}</DialogTitle>
+        </DialogHeader>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            mutation.mutate(form);
+          }}
+          className="space-y-4"
+        >
+          <div className="space-y-2">
+            <Label htmlFor="quickDriverName">
+              {t("drivers.fullName")} <span className="text-red-500">*</span>
+            </Label>
+            <Input
+              id="quickDriverName"
+              value={form.fullName}
+              onChange={set("fullName")}
+              required
+              placeholder={t("drivers.fullNamePh")}
+              className="border-border focus:border-primary"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>{t("drivers.driverType")}</Label>
+            <Select
+              value={form.driverType}
+              onValueChange={(v) => setForm((f) => ({ ...f, driverType: v as DriverQuickForm["driverType"] }))}
+            >
+              <SelectTrigger className="border-border">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="OO">{t("drivers.oo")}</SelectItem>
+                <SelectItem value="CD">{t("drivers.cd")}</SelectItem>
+                <SelectItem value="Lease">{t("drivers.lease")}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="quickDriverPhone">{t("drivers.phone")}</Label>
+              <Input
+                id="quickDriverPhone"
+                value={form.phone}
+                onChange={set("phone")}
+                placeholder={t("drivers.phonePh")}
+                className="border-border focus:border-primary"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="quickDriverTruck">{t("drivers.truckNumber")}</Label>
+              <Input
+                id="quickDriverTruck"
+                value={form.truckNumber}
+                onChange={set("truckNumber")}
+                placeholder={t("drivers.truckPh")}
+                className="border-border focus:border-primary"
+              />
+            </div>
+          </div>
+          {mutation.error && (
+            <p className="text-sm text-red-600">{(mutation.error as Error).message}</p>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              {t("common.cancel")}
+            </Button>
+            <Button
+              type="submit"
+              className="bg-primary hover:bg-primary/90 text-white"
+              disabled={mutation.isPending}
+            >
+              {mutation.isPending ? t("common.saving") : t("drivers.addDriver")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { t, formatCurrency, formatDate, formatNumber } = useI18n();
   const [form, setForm] = useState<LoadForm>(EMPTY);
+  const [driverAddOpen, setDriverAddOpen] = useState(false);
   const qc = useQueryClient();
 
   const { data: drivers } = useListDrivers({});
-  const { data: brokers } = useListBrokers({});
 
-  // Auto-compute weekStart from puDate
   useEffect(() => {
     if (form.puDate) {
       setForm((f) => ({ ...f, weekStart: getMondayOfWeek(form.puDate) }));
     }
   }, [form.puDate]);
 
-  // Auto-fill delDate from puDate if empty
   useEffect(() => {
     if (form.puDate && !form.delDate) {
       setForm((f) => ({ ...f, delDate: form.puDate }));
@@ -109,6 +255,7 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
 
   const mutation = useMutation({
     mutationFn: async (data: LoadForm) => {
+      const brokerId = await resolveBrokerIdByName(data.brokerName);
       const res = await fetch("/api/loads", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -116,7 +263,7 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
         body: JSON.stringify({
           loadNumber: data.loadNumber,
           driverId: data.driverId || null,
-          brokerId: data.brokerId || null,
+          brokerId,
           puDate: data.puDate,
           delDate: data.delDate || data.puDate,
           originCity: data.originCity,
@@ -133,13 +280,14 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Failed to create load");
+        throw new Error(err.error || t("loads.createFailed"));
       }
       return res.json();
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/loads"] });
       qc.invalidateQueries({ queryKey: ["/api/analytics"] });
+      qc.invalidateQueries({ queryKey: ["/api/brokers"] });
       setForm(EMPTY);
       onClose();
     },
@@ -157,6 +305,7 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
 
   const handleClose = () => {
     setForm(EMPTY);
+    setDriverAddOpen(false);
     mutation.reset();
     onClose();
   };
@@ -167,94 +316,98 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
       <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="text-[#1A3C5E] text-xl">Add New Load</DialogTitle>
+          <DialogTitle className="text-foreground text-xl">{t("loads.addNewLoad")}</DialogTitle>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-5">
-          {/* Load # + Status */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <Label htmlFor="loadNumber">
-                Load # <span className="text-red-500">*</span>
+                {t("loads.loadNumber")} <span className="text-red-500">*</span>
               </Label>
               <Input
                 id="loadNumber"
                 value={form.loadNumber}
                 onChange={set("loadNumber")}
                 required
-                placeholder="e.g. CY-240700"
-                className="border-gray-200 focus:border-[#1A3C5E]"
+                placeholder={t("loads.loadNumberPh")}
+                className="border-border focus:border-primary"
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Status</Label>
+              <Label>{t("loads.status")}</Label>
               <Select
                 value={form.status}
                 onValueChange={(v) => setForm((f) => ({ ...f, status: v }))}
               >
-                <SelectTrigger className="border-gray-200">
+                <SelectTrigger className="border-border">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="Booked">Booked</SelectItem>
-                  <SelectItem value="PickedUp">Picked Up</SelectItem>
-                  <SelectItem value="Delivered">Delivered</SelectItem>
-                  <SelectItem value="Canceled">Canceled</SelectItem>
+                  {DISPATCHER_LOAD_STATUSES.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {translateLoadStatus(t, s)}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
           </div>
 
-          {/* Driver + Broker */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <Label>Driver</Label>
-              <Select
-                value={form.driverId}
-                onValueChange={(v) => setForm((f) => ({ ...f, driverId: v === "_none" ? "" : v }))}
-              >
-                <SelectTrigger className="border-gray-200">
-                  <SelectValue placeholder="Select driver…" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="_none">— Unassigned —</SelectItem>
-                  {activeDrivers.map((d) => (
-                    <SelectItem key={d.id} value={d.id}>
-                      {d.fullName}
-                      {d.truckNumber ? ` (#${d.truckNumber})` : ""}
-                      <span className="text-gray-400 ml-1 text-xs">{d.driverType}</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>{t("loads.driver")}</Label>
+              <div className="flex gap-2">
+                <div className="flex-1 min-w-0">
+                  <Select
+                    value={form.driverId}
+                    onValueChange={(v) => setForm((f) => ({ ...f, driverId: v === "_none" ? "" : v }))}
+                  >
+                    <SelectTrigger className="border-border">
+                      <SelectValue placeholder={t("loads.selectDriver")} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="_none">{t("loads.unassigned")}</SelectItem>
+                      {activeDrivers.map((d) => (
+                        <SelectItem key={d.id} value={d.id}>
+                          {d.fullName}
+                          {d.truckNumber ? ` (#${d.truckNumber})` : ""}
+                          <span className="text-muted-foreground ml-1 text-xs">
+                            {t(DRIVER_TYPE_KEYS[d.driverType] ?? d.driverType)}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="shrink-0 border-border"
+                  title={t("drivers.addDriver")}
+                  onClick={() => setDriverAddOpen(true)}
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
             <div className="space-y-1.5">
-              <Label>Broker</Label>
-              <Select
-                value={form.brokerId}
-                onValueChange={(v) => setForm((f) => ({ ...f, brokerId: v === "_none" ? "" : v }))}
-              >
-                <SelectTrigger className="border-gray-200">
-                  <SelectValue placeholder="Select broker…" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="_none">— None —</SelectItem>
-                  {(brokers ?? []).map((b) => (
-                    <SelectItem key={b.id} value={b.id}>
-                      {b.name}
-                      {b.mcNumber ? ` (${b.mcNumber})` : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label htmlFor="brokerName">{t("loads.broker")}</Label>
+              <Input
+                id="brokerName"
+                value={form.brokerName}
+                onChange={set("brokerName")}
+                placeholder={t("loads.brokerNamePh")}
+                className="border-border focus:border-primary"
+              />
             </div>
           </div>
 
-          {/* Dates */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <Label htmlFor="puDate">
-                Pickup Date <span className="text-red-500">*</span>
+                {t("loads.pickupDate")} <span className="text-red-500">*</span>
               </Label>
               <Input
                 id="puDate"
@@ -262,12 +415,12 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
                 value={form.puDate}
                 onChange={set("puDate")}
                 required
-                className="border-gray-200 focus:border-[#1A3C5E]"
+                className="border-border focus:border-primary"
               />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="delDate">
-                Delivery Date <span className="text-red-500">*</span>
+                {t("loads.deliveryDate")} <span className="text-red-500">*</span>
               </Label>
               <Input
                 id="delDate"
@@ -275,40 +428,39 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
                 value={form.delDate}
                 onChange={set("delDate")}
                 required
-                className="border-gray-200 focus:border-[#1A3C5E]"
+                className="border-border focus:border-primary"
               />
             </div>
           </div>
 
-          {/* Origin */}
           <div>
-            <Label className="text-sm font-semibold text-gray-700 mb-2 block">
-              Origin
+            <Label className="text-sm font-semibold text-foreground mb-2 block">
+              {t("loads.origin")}
             </Label>
             <div className="grid grid-cols-3 gap-3">
               <div className="col-span-2 space-y-1.5">
-                <Label htmlFor="originCity" className="text-xs text-gray-500">
-                  City <span className="text-red-500">*</span>
+                <Label htmlFor="originCity" className="text-xs text-muted-foreground">
+                  {t("loads.city")} <span className="text-red-500">*</span>
                 </Label>
                 <Input
                   id="originCity"
                   value={form.originCity}
                   onChange={set("originCity")}
                   required
-                  placeholder="Dallas"
-                  className="border-gray-200 focus:border-[#1A3C5E]"
+                  placeholder={t("loads.originCityPh")}
+                  className="border-border focus:border-primary"
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="originState" className="text-xs text-gray-500">
-                  State <span className="text-red-500">*</span>
+                <Label htmlFor="originState" className="text-xs text-muted-foreground">
+                  {t("loads.state")} <span className="text-red-500">*</span>
                 </Label>
                 <Select
                   value={form.originState}
                   onValueChange={(v) => setForm((f) => ({ ...f, originState: v }))}
                 >
-                  <SelectTrigger className="border-gray-200">
-                    <SelectValue placeholder="ST" />
+                  <SelectTrigger className="border-border">
+                    <SelectValue placeholder={t("loads.statePh")} />
                   </SelectTrigger>
                   <SelectContent className="max-h-60">
                     {US_STATES.map((s) => (
@@ -322,35 +474,34 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
             </div>
           </div>
 
-          {/* Destination */}
           <div>
-            <Label className="text-sm font-semibold text-gray-700 mb-2 block">
-              Destination
+            <Label className="text-sm font-semibold text-foreground mb-2 block">
+              {t("loads.destination")}
             </Label>
             <div className="grid grid-cols-3 gap-3">
               <div className="col-span-2 space-y-1.5">
-                <Label htmlFor="destCity" className="text-xs text-gray-500">
-                  City <span className="text-red-500">*</span>
+                <Label htmlFor="destCity" className="text-xs text-muted-foreground">
+                  {t("loads.city")} <span className="text-red-500">*</span>
                 </Label>
                 <Input
                   id="destCity"
                   value={form.destCity}
                   onChange={set("destCity")}
                   required
-                  placeholder="Los Angeles"
-                  className="border-gray-200 focus:border-[#1A3C5E]"
+                  placeholder={t("loads.destCityPh")}
+                  className="border-border focus:border-primary"
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="destState" className="text-xs text-gray-500">
-                  State <span className="text-red-500">*</span>
+                <Label htmlFor="destState" className="text-xs text-muted-foreground">
+                  {t("loads.state")} <span className="text-red-500">*</span>
                 </Label>
                 <Select
                   value={form.destState}
                   onValueChange={(v) => setForm((f) => ({ ...f, destState: v }))}
                 >
-                  <SelectTrigger className="border-gray-200">
-                    <SelectValue placeholder="ST" />
+                  <SelectTrigger className="border-border">
+                    <SelectValue placeholder={t("loads.statePh")} />
                   </SelectTrigger>
                   <SelectContent className="max-h-60">
                     {US_STATES.map((s) => (
@@ -364,11 +515,10 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
             </div>
           </div>
 
-          {/* Mileage + Rate + Reimbursement */}
           <div className="grid grid-cols-3 gap-4">
             <div className="space-y-1.5">
               <Label htmlFor="mileage">
-                Mileage <span className="text-red-500">*</span>
+                {t("loads.mileage")} <span className="text-red-500">*</span>
               </Label>
               <Input
                 id="mileage"
@@ -378,13 +528,13 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
                 value={form.mileage}
                 onChange={set("mileage")}
                 required
-                placeholder="1432"
-                className="border-gray-200 focus:border-[#1A3C5E]"
+                placeholder={t("loads.mileagePh")}
+                className="border-border focus:border-primary"
               />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="rate">
-                Rate ($) <span className="text-red-500">*</span>
+                {t("loads.rate")} <span className="text-red-500">*</span>
               </Label>
               <Input
                 id="rate"
@@ -394,12 +544,12 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
                 value={form.rate}
                 onChange={set("rate")}
                 required
-                placeholder="5200.00"
-                className="border-gray-200 focus:border-[#1A3C5E]"
+                placeholder={t("loads.ratePh")}
+                className="border-border focus:border-primary"
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="reimbursement">Reimbursement ($)</Label>
+              <Label htmlFor="reimbursement">{t("loads.reimbursement")}</Label>
               <Input
                 id="reimbursement"
                 type="number"
@@ -407,77 +557,74 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
                 step="0.01"
                 value={form.reimbursement}
                 onChange={set("reimbursement")}
-                placeholder="0.00"
-                className="border-gray-200 focus:border-[#1A3C5E]"
+                placeholder={t("loads.reimbPh")}
+                className="border-border focus:border-primary"
               />
             </div>
           </div>
 
-          {/* Live RPM preview */}
           {rpm !== null && (
-            <div className="flex items-center gap-2 bg-blue-50 border border-blue-100 rounded-lg px-4 py-2.5">
-              <span className="text-xs text-blue-600 font-medium">Live RPM:</span>
-              <span className="text-base font-bold text-[#1A3C5E]">{fmt(rpm)}/mi</span>
+            <div className="flex items-center gap-2 bg-primary/10 border border-blue-100 rounded-lg px-4 py-2.5">
+              <span className="text-xs text-blue-600 font-medium">{t("loads.liveRpm")}</span>
+              <span className="text-base font-bold text-foreground">{formatCurrency(rpm)}{t("common.perMile")}</span>
               <span className="text-xs text-blue-400 ml-auto">
-                {fmt(Number(form.rate))} ÷ {Number(form.mileage).toLocaleString()} mi
+                {formatCurrency(Number(form.rate))} ÷ {formatNumber(Number(form.mileage))} {t("weekly.miles").toLowerCase()}
               </span>
             </div>
           )}
 
-          {/* Week Start (auto) */}
           {form.weekStart && (
-            <div className="flex items-center gap-2 text-xs text-gray-500">
-              <span className="font-medium">Week of:</span>
-              <span className="text-[#1A3C5E] font-semibold">
-                {new Date(form.weekStart).toLocaleDateString(undefined, {
-                  month: "long",
-                  day: "numeric",
-                  year: "numeric",
-                })}
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="font-medium">{t("loads.weekOf")}</span>
+              <span className="text-foreground font-semibold">
+                {formatDate(form.weekStart)}
               </span>
-              <span className="text-gray-400">(auto-computed from pickup date)</span>
+              <span className="text-muted-foreground">{t("loads.weekAuto")}</span>
             </div>
           )}
 
-          {/* Dispatch Notes */}
           <div className="space-y-1.5">
-            <Label htmlFor="dispatchNotes">Dispatch Notes</Label>
+            <Label htmlFor="dispatchNotes">{t("loads.dispatchNotes")}</Label>
             <Textarea
               id="dispatchNotes"
               value={form.dispatchNotes}
               onChange={set("dispatchNotes")}
-              placeholder="Any special instructions, pickup details, contact info…"
+              placeholder={t("loads.notesPh")}
               rows={3}
-              className="border-gray-200 focus:border-[#1A3C5E] resize-none"
+              className="border-border focus:border-primary resize-none"
             />
           </div>
 
           {mutation.error && (
             <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-red-700 text-sm">
               <AlertTriangle className="h-4 w-4 shrink-0" />
-              {(mutation.error as Error).message || "Failed to create load. Please try again."}
+              {(mutation.error as Error).message || t("loads.createFailedRetry")}
             </div>
           )}
 
           <DialogFooter className="pt-2">
-            <Button type="button" variant="outline" onClick={handleClose} className="border-gray-200">
-              Cancel
+            <Button type="button" variant="outline" onClick={handleClose} className="border-border">
+              {t("common.cancel")}
             </Button>
             <Button
               type="submit"
-              className="bg-[#1A3C5E] hover:bg-[#122A42] text-white min-w-[120px]"
+              className="bg-primary hover:bg-primary/90 text-white min-w-[120px]"
               disabled={mutation.isPending}
             >
-              {mutation.isPending ? "Adding…" : "Add Load"}
+              {mutation.isPending ? t("loads.adding") : t("loads.addLoad")}
             </Button>
           </DialogFooter>
         </form>
+
+        <QuickAddDriverDialog
+          open={driverAddOpen}
+          onClose={() => setDriverAddOpen(false)}
+          onCreated={(driverId) => setForm((f) => ({ ...f, driverId }))}
+        />
       </DialogContent>
     </Dialog>
   );
 }
-
-// ─── Filter Panel ────────────────────────────────────────────────────────────
 
 interface Filters {
   status: string;
@@ -496,6 +643,7 @@ function FilterPanel({
   filters: Filters;
   onChange: (f: Filters) => void;
 }) {
+  const { t } = useI18n();
   const { data: drivers } = useListDrivers({});
   const { data: brokers } = useListBrokers({});
   const [local, setLocal] = useState<Filters>(filters);
@@ -505,23 +653,23 @@ function FilterPanel({
   const hasActive = local.status !== "" || local.driverId !== "" || local.brokerId !== "";
 
   return (
-    <div className="bg-white border border-gray-200 rounded-xl shadow-lg p-5 space-y-4">
+    <div className="bg-card border border-border rounded-xl shadow-lg p-5 space-y-4">
       <div className="flex items-center justify-between">
-        <p className="font-semibold text-[#1A3C5E] text-sm">Filters</p>
+        <p className="font-semibold text-foreground text-sm">{t("common.filters")}</p>
         <div className="flex items-center gap-2">
           {hasActive && (
             <button
-              className="text-xs text-gray-400 hover:text-red-500 transition-colors"
+              className="text-xs text-muted-foreground hover:text-red-500 transition-colors"
               onClick={() => {
                 const cleared = { status: "", driverId: "", brokerId: "" };
                 setLocal(cleared);
                 onChange(cleared);
               }}
             >
-              Clear all
+              {t("loads.clearAll")}
             </button>
           )}
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+          <button onClick={onClose} className="text-muted-foreground hover:text-muted-foreground">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -529,7 +677,7 @@ function FilterPanel({
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="space-y-1.5">
-          <Label className="text-xs">Status</Label>
+          <Label className="text-xs">{t("loads.status")}</Label>
           <Select
             value={local.status}
             onValueChange={(v) => {
@@ -538,21 +686,22 @@ function FilterPanel({
               onChange(next);
             }}
           >
-            <SelectTrigger className="border-gray-200 h-9 text-sm">
-              <SelectValue placeholder="All statuses" />
+            <SelectTrigger className="border-border h-9 text-sm">
+              <SelectValue placeholder={t("loads.allStatuses")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="_all">All statuses</SelectItem>
-              <SelectItem value="Booked">Booked</SelectItem>
-              <SelectItem value="PickedUp">Picked Up</SelectItem>
-              <SelectItem value="Delivered">Delivered</SelectItem>
-              <SelectItem value="Canceled">Canceled</SelectItem>
+              <SelectItem value="_all">{t("loads.allStatuses")}</SelectItem>
+              {DISPATCHER_LOAD_STATUSES.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {translateLoadStatus(t, s)}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
 
         <div className="space-y-1.5">
-          <Label className="text-xs">Driver</Label>
+          <Label className="text-xs">{t("loads.driver")}</Label>
           <Select
             value={local.driverId}
             onValueChange={(v) => {
@@ -561,11 +710,11 @@ function FilterPanel({
               onChange(next);
             }}
           >
-            <SelectTrigger className="border-gray-200 h-9 text-sm">
-              <SelectValue placeholder="All drivers" />
+            <SelectTrigger className="border-border h-9 text-sm">
+              <SelectValue placeholder={t("loads.allDrivers")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="_all">All drivers</SelectItem>
+              <SelectItem value="_all">{t("loads.allDrivers")}</SelectItem>
               {(drivers ?? []).map((d) => (
                 <SelectItem key={d.id} value={d.id}>
                   {d.fullName}
@@ -576,7 +725,7 @@ function FilterPanel({
         </div>
 
         <div className="space-y-1.5">
-          <Label className="text-xs">Broker</Label>
+          <Label className="text-xs">{t("loads.broker")}</Label>
           <Select
             value={local.brokerId}
             onValueChange={(v) => {
@@ -585,11 +734,11 @@ function FilterPanel({
               onChange(next);
             }}
           >
-            <SelectTrigger className="border-gray-200 h-9 text-sm">
-              <SelectValue placeholder="All brokers" />
+            <SelectTrigger className="border-border h-9 text-sm">
+              <SelectValue placeholder={t("loads.allBrokers")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="_all">All brokers</SelectItem>
+              <SelectItem value="_all">{t("loads.allBrokers")}</SelectItem>
               {(brokers ?? []).map((b) => (
                 <SelectItem key={b.id} value={b.id}>
                   {b.name}
@@ -603,10 +752,8 @@ function FilterPanel({
   );
 }
 
-// ─── Main Page ────────────────────────────────────────────────────────────────
-
 export default function LoadsList() {
-  const [, setLocation] = useLocation();
+  const { t } = useI18n();
   const [search, setSearch] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -614,6 +761,11 @@ export default function LoadsList() {
 
   const activeFilters = Object.values(filters).filter(Boolean).length;
 
+  const { data: me } = useGetMe({});
+  const userRole = me?.role ?? "dispatcher";
+
+  const { data: brokersData } = useListBrokers({});
+  const { data: driversData } = useListDrivers({});
   const { data: loadsData, isLoading } = useListLoads({
     search: search || undefined,
     status: (filters.status as any) || undefined,
@@ -623,44 +775,42 @@ export default function LoadsList() {
   });
 
   return (
-    <div className="space-y-4 h-full flex flex-col">
-      {/* Header */}
+    <div className="space-y-4 flex-1 flex flex-col min-h-0">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <h1 className="text-2xl font-bold text-[#1A3C5E]" data-testid="page-title-loads">
-          Loads Board
+        <h1 className="text-2xl font-bold text-foreground" data-testid="page-title-loads">
+          {t("loads.title")}
         </h1>
         <Button
-          className="bg-[#2196F3] hover:bg-[#1E88E5] text-white shadow-sm"
+          className="bg-accent hover:bg-accent/90 text-white shadow-sm"
           onClick={() => setAddOpen(true)}
           data-testid="button-add-load"
         >
-          <Plus className="h-4 w-4 mr-2" /> Add Load
+          <Plus className="h-4 w-4 mr-2" /> {t("loads.addLoad")}
         </Button>
       </div>
 
-      {/* Search + Filter bar */}
       <div className="space-y-3">
         <div className="flex gap-3">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search load #, city, driver…"
+              placeholder={t("loads.search")}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-9 bg-white border-gray-200 shadow-sm focus:border-[#1A3C5E]"
+              className="pl-9 bg-card border-border shadow-sm focus:border-primary"
               data-testid="input-search-loads"
             />
           </div>
           <Button
             variant="outline"
-            className={`border-gray-200 shadow-sm gap-2 ${activeFilters > 0 ? "border-[#1A3C5E] text-[#1A3C5E] bg-blue-50" : "text-gray-600"}`}
+            className={`border-border shadow-sm gap-2 ${activeFilters > 0 ? "border-primary text-foreground bg-primary/10" : "text-muted-foreground"}`}
             onClick={() => setFilterOpen((v) => !v)}
             data-testid="button-filter-loads"
           >
             <Filter className="h-4 w-4" />
-            Filters
+            {t("common.filters")}
             {activeFilters > 0 && (
-              <span className="bg-[#1A3C5E] text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold">
+              <span className="bg-primary text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold">
                 {activeFilters}
               </span>
             )}
@@ -675,131 +825,40 @@ export default function LoadsList() {
         />
       </div>
 
-      {/* Table */}
-      <Card className="flex-1 flex flex-col overflow-hidden shadow-sm border-gray-200">
-        <div className="flex-1 overflow-auto bg-white">
-          <table className="w-full text-sm text-left relative">
-            <thead className="text-xs text-gray-500 bg-gray-50 uppercase border-b sticky top-0 z-10 shadow-sm">
-              <tr>
-                <th className="px-6 py-4 font-semibold">Load #</th>
-                <th className="px-6 py-4 font-semibold">Driver</th>
-                <th className="px-6 py-4 font-semibold">Broker</th>
-                <th className="px-6 py-4 font-semibold">Route</th>
-                <th className="px-6 py-4 font-semibold">Dates</th>
-                <th className="px-6 py-4 font-semibold text-right">Rate / RPM</th>
-                <th className="px-6 py-4 font-semibold text-right">B-I Diff</th>
-                <th className="px-6 py-4 font-semibold text-center">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {isLoading ? (
-                Array.from({ length: 10 }).map((_, i) => (
-                  <tr key={i}>
-                    {Array.from({ length: 8 }).map((_, j) => (
-                      <td key={j} className="px-6 py-4">
-                        <Skeleton className="h-5 w-20" />
-                      </td>
-                    ))}
-                  </tr>
-                ))
-              ) : loadsData?.data?.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="px-6 py-16 text-center">
-                    <div className="flex flex-col items-center gap-3 text-gray-400">
-                      <div className="bg-gray-100 p-4 rounded-full">
-                        <Plus className="h-8 w-8 text-gray-300" />
-                      </div>
-                      <p className="font-medium text-gray-500">No loads found</p>
-                      <p className="text-sm">
-                        {search || activeFilters > 0
-                          ? "Try adjusting your search or filters"
-                          : `Click "Add Load" to create your first load`}
-                      </p>
-                      {!search && !activeFilters && (
-                        <Button
-                          className="mt-2 bg-[#2196F3] hover:bg-[#1E88E5] text-white"
-                          onClick={() => setAddOpen(true)}
-                        >
-                          <Plus className="h-4 w-4 mr-2" /> Add Load
-                        </Button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ) : (
-                loadsData?.data?.map((load) => {
-                  const isNegativeDiff = (load.biDiff ?? 0) < 0;
-                  return (
-                    <tr
-                      key={load.id}
-                      onClick={() => setLocation(`/loads/${load.id}`)}
-                      className={`hover:bg-blue-50/50 cursor-pointer transition-colors ${isNegativeDiff ? "bg-red-50/30" : ""}`}
-                      data-testid={`row-load-${load.id}`}
-                    >
-                      <td className="px-6 py-4 font-bold text-[#1A3C5E]">{load.loadNumber}</td>
-                      <td className="px-6 py-4 font-medium text-gray-900">
-                        {load.driver?.fullName || <span className="text-gray-400">—</span>}
-                      </td>
-                      <td className="px-6 py-4 text-gray-600">
-                        {load.broker?.name || <span className="text-gray-400">—</span>}
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="font-medium text-gray-900 truncate max-w-[200px]">
-                          {load.originCity}, {load.originState} →
-                        </div>
-                        <div className="text-gray-500 text-xs truncate max-w-[200px]">
-                          {load.destCity}, {load.destState}{" "}
-                          <span className="text-gray-400">({load.mileage?.toLocaleString()} mi)</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-gray-600">
-                        <div>{new Date(load.puDate).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</div>
-                        <div className="text-xs text-gray-400">
-                          {new Date(load.delDate).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <div className="font-bold text-gray-900">{fmt(load.rate)}</div>
-                        <div className="text-xs text-gray-500">{fmt(load.rpm ?? 0)}/mi</div>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <div
-                          className={`font-semibold flex items-center justify-end gap-1 ${isNegativeDiff ? "text-red-600" : load.biDiff !== null && load.biDiff !== undefined ? "text-green-700" : "text-gray-400"}`}
-                        >
-                          {isNegativeDiff && <AlertTriangle className="h-3 w-3" />}
-                          {load.biDiff !== null && load.biDiff !== undefined
-                            ? fmt(load.biDiff)
-                            : "—"}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-center">
-                        <LoadStatusBadge status={load.status} />
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+      <div className="flex-1 flex flex-col overflow-hidden border border-border bg-card min-h-0 w-full">
+        <div className="flex-1 overflow-auto">
+          <LoadsSpreadsheet
+            loads={loadsData?.data ?? []}
+            isLoading={isLoading}
+            userRole={userRole}
+            brokers={brokersData ?? []}
+            drivers={driversData ?? []}
+            onAddLoad={() => setAddOpen(true)}
+            emptyMessage={{
+              title: t("loads.noLoads"),
+              subtitle:
+                search || activeFilters > 0 ? t("loads.adjustFilters") : t("loads.addFirst"),
+              showAdd: !search && !activeFilters,
+            }}
+          />
         </div>
 
-        {/* Row count footer */}
         {!isLoading && loadsData && loadsData.total > 0 && (
-          <div className="px-6 py-3 border-t border-gray-100 bg-gray-50 text-xs text-gray-500 flex items-center justify-between">
+          <div className="px-3 py-2 border-t border-border bg-[#f8f9fa] text-xs text-muted-foreground flex items-center justify-between shrink-0">
             <span>
-              Showing {loadsData.data?.length ?? 0} of {loadsData.total} loads
+              {t("loads.showing", { shown: loadsData.data?.length ?? 0, total: loadsData.total })}
             </span>
             {activeFilters > 0 && (
               <button
-                className="text-[#2196F3] hover:underline"
+                className="text-accent hover:underline"
                 onClick={() => setFilters({ status: "", driverId: "", brokerId: "" })}
               >
-                Clear filters
+                {t("loads.clearFilters")}
               </button>
             )}
           </div>
         )}
-      </Card>
+      </div>
 
       <AddLoadModal open={addOpen} onClose={() => setAddOpen(false)} />
     </div>

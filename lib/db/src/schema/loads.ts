@@ -1,11 +1,23 @@
-import { pgTable, text, boolean, timestamp, decimal, date, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, text, boolean, timestamp, decimal, date, pgEnum, integer } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { usersTable } from "./users";
 import { driversTable } from "./drivers";
 import { brokersTable } from "./brokers";
 
-export const loadStatusEnum = pgEnum("load_status", ["Booked", "PickedUp", "Delivered", "Canceled"]);
+export const loadStatusEnum = pgEnum("load_status", [
+  "Booked",
+  "InQM",
+  "Delivered",
+  "Canceled",
+  "Completed",
+  "NeedRevRC",
+  "Issue",
+  "Checked",
+  "Invoiced",
+  "Reinvoiced",
+  "BrokerPaid",
+]);
 
 export const loadsTable = pgTable("loads", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
@@ -28,6 +40,7 @@ export const loadsTable = pgTable("loads", {
   brokerPaid: decimal("broker_paid", { precision: 10, scale: 2 }),
   notes: text("notes"),
   weekStart: date("week_start", { mode: "string" }).notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
   isDeleted: boolean("is_deleted").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),

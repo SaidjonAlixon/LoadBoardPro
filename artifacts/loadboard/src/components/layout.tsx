@@ -1,74 +1,103 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useCallback } from "react";
 import { Link, useLocation } from "wouter";
-import { useUser, useClerk } from "@clerk/react";
-import { 
-  LayoutDashboard, 
-  Truck, 
-  CalendarDays, 
-  Users, 
-  Calculator, 
-  Bell, 
-  Settings, 
+import { useAuth } from "@/lib/auth";
+import { useI18n, translateRole } from "@/lib/i18n";
+import { LanguageSwitcher } from "@/components/language-switcher";
+import { ThemeToggle } from "@/components/theme-toggle";
+import {
+  LayoutDashboard,
+  Truck,
+  CalendarDays,
+  Users,
+  Calculator,
+  Bell,
+  Settings,
   LogOut,
   Menu,
   X,
   ShieldCheck,
+  ChevronRight,
 } from "lucide-react";
 import { useListNotifications, useGetMe } from "@workspace/api-client-react";
-import { Button } from "./ui/button";
-import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
+import { UserAvatar } from "@/components/user-avatar";
+import { LoadBoardProLogo } from "./brand-logo";
 
 interface LayoutProps {
   children: React.ReactNode;
 }
 
+type NavItem = {
+  labelKey: string;
+  href: string;
+  icon: React.ElementType;
+  badge?: number;
+};
+
 export default function Layout({ children }: LayoutProps) {
+  const { t } = useI18n();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const { user } = useUser();
-  const { signOut } = useClerk();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { user, logout } = useAuth();
   const [location] = useLocation();
 
-  // Polling notifications unread count
   const { data: notifications } = useListNotifications({ unreadOnly: true });
   const unreadCount = notifications?.length || 0;
 
-  // Fetch role for admin-only nav item
   const { data: me } = useGetMe({});
   const isAdmin = me?.role === "admin";
 
-  const baseNavItems = [
-    { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-    { label: "Loads", href: "/loads", icon: Truck },
-    { label: "Weekly View", href: "/weekly", icon: CalendarDays },
-    { label: "Drivers", href: "/drivers", icon: Users },
-    { label: "Accounting", href: "/accounting", icon: Calculator },
-    { label: "Notifications", href: "/notifications", icon: Bell, badge: unreadCount },
-    { label: "Settings", href: "/settings", icon: Settings },
+  const displayName = me?.name || user?.name || user?.email || t("common.user");
+  const userRole = me?.role || user?.role || "dispatcher";
+
+  const showAccounting = userRole === "admin" || userRole === "accounting";
+
+  const baseNavItems: NavItem[] = [
+    { labelKey: "nav.dashboard", href: "/dashboard", icon: LayoutDashboard },
+    { labelKey: "nav.loads", href: "/loads", icon: Truck },
+    { labelKey: "nav.weeklyView", href: "/weekly", icon: CalendarDays },
+    { labelKey: "nav.drivers", href: "/drivers", icon: Users },
+    ...(showAccounting
+      ? [{ labelKey: "nav.accounting", href: "/accounting", icon: Calculator }]
+      : []),
+    { labelKey: "nav.notifications", href: "/notifications", icon: Bell, badge: unreadCount },
+    { labelKey: "nav.settings", href: "/settings", icon: Settings },
   ];
 
-  const navItems = isAdmin
-    ? [
-        ...baseNavItems,
-        { label: "Admin Panel", href: "/admin", icon: ShieldCheck, badge: 0 },
-      ]
+  const navItems: NavItem[] = isAdmin
+    ? [...baseNavItems, { labelKey: "nav.adminPanel", href: "/admin", icon: ShieldCheck, badge: 0 }]
     : baseNavItems;
 
-  const NavLink = ({ item, onClick }: { item: typeof navItems[0]; onClick?: () => void }) => {
-    const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
+  const openSidebar = useCallback(() => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    setSidebarOpen(true);
+  }, []);
+
+  const scheduleCloseSidebar = useCallback(() => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = setTimeout(() => setSidebarOpen(false), 280);
+  }, []);
+
+  const NavLink = ({ item, onClick }: { item: NavItem; onClick?: () => void }) => {
+    const isActive =
+      location === item.href || (item.href !== "/" && location.startsWith(item.href));
     return (
       <Link
         href={item.href}
         onClick={onClick}
-        className={`flex items-center space-x-3 px-3 py-2.5 rounded-md transition-colors ${
+        className={`group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 ${
           isActive
-            ? "bg-[#2196F3] text-white"
-            : "text-blue-100 hover:bg-[#2A4D70] hover:text-white"
+            ? "bg-accent text-accent-foreground shadow-md shadow-accent/30"
+            : "text-blue-100/90 hover:bg-white/10 hover:text-white"
         }`}
       >
-        <item.icon size={18} />
-        <span className="flex-1 font-medium text-sm">{item.label}</span>
+        <item.icon
+          size={18}
+          className={isActive ? "text-white" : "text-blue-200 group-hover:text-white"}
+        />
+        <span className="flex-1 font-medium text-sm">{t(item.labelKey)}</span>
         {item.badge ? (
-          <span className="bg-[#E65100] text-white text-xs font-bold px-2 py-0.5 rounded-full">
+          <span className="bg-[#E65100] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
             {item.badge}
           </span>
         ) : null}
@@ -76,132 +105,198 @@ export default function Layout({ children }: LayoutProps) {
     );
   };
 
+  const handleLogout = async () => {
+    await logout();
+    window.location.href = "/";
+  };
+
+  const isFullWidth = location === "/loads" || location === "/weekly" || location === "/accounting";
+  const isCompactPage = location === "/settings";
+
+  const sidebarContent = (onNavClick?: () => void) => (
+    <>
+      <div className="flex items-center justify-center px-3 py-4 border-b border-white/10">
+        <LoadBoardProLogo onDarkPanel className="w-full h-20 max-h-20 shrink-0" />
+      </div>
+
+      <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
+        {navItems.map((item) => (
+          <NavLink key={item.href} item={item} onClick={onNavClick} />
+        ))}
+      </nav>
+
+      <div className="p-4 border-t border-white/10 space-y-3 bg-black/10">
+        <div className="flex justify-center items-center gap-2">
+          <ThemeToggle compact />
+          <LanguageSwitcher compact />
+        </div>
+        <div className="flex items-center gap-3 rounded-lg bg-white/5 p-2.5 ring-1 ring-white/10">
+          <UserAvatar
+            name={displayName}
+            email={me?.email || user?.email}
+            avatarKey={me?.avatarKey}
+            className="h-9 w-9 ring-2 ring-[#2196F3]/50"
+            fallbackClassName="bg-[#2A4D70] text-sm"
+          />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-white truncate">{displayName}</p>
+            <p className="text-[11px] text-blue-200/80 truncate">{translateRole(t, userRole)}</p>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="p-1.5 rounded-md text-blue-200 hover:text-white hover:bg-white/10 transition-colors"
+            data-testid="button-logout"
+          >
+            <LogOut size={16} />
+          </button>
+        </div>
+      </div>
+    </>
+  );
+
   return (
-    <div className="flex h-screen bg-[#F5F7FA]">
-      {/* Desktop Sidebar */}
-      <aside className="hidden md:flex flex-col w-64 bg-[#1A3C5E] text-white overflow-y-auto">
-        <div className="p-6 flex items-center space-x-3">
-          <div className="bg-white p-1 rounded">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M4 16H2V6C2 4.89543 2.89543 4 4 4H14C15.1046 4 16 4.89543 16 6V16H14" stroke="#1A3C5E" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M16 11H20C21.1046 11 22 11.8954 22 13V16H20" stroke="#1A3C5E" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              <circle cx="6" cy="18" r="2" stroke="#1A3C5E" strokeWidth="2"/>
-              <circle cx="18" cy="18" r="2" stroke="#1A3C5E" strokeWidth="2"/>
-              <path d="M8 18H16" stroke="#1A3C5E" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              <text x="5" y="12" fontFamily="Inter, sans-serif" fontWeight="bold" fontSize="6" fill="#1A3C5E">LB</text>
-            </svg>
-          </div>
-          <span className="font-bold text-xl tracking-tight">LoadBoard Pro</span>
+    <div className="flex h-screen bg-background">
+      {/* Desktop: hover edge + slide-out sidebar */}
+      <div
+        className="hidden md:block fixed inset-y-0 left-0 z-50"
+        onMouseLeave={scheduleCloseSidebar}
+      >
+        {/* Left edge trigger strip */}
+        <div
+          className={`absolute inset-y-0 left-0 z-10 flex items-center justify-center transition-all duration-300 ${
+            sidebarOpen ? "w-0 opacity-0" : "w-3 opacity-100"
+          }`}
+          onMouseEnter={openSidebar}
+        >
+          <div className="h-16 w-1 rounded-full bg-primary/30 hover:bg-accent/60 transition-colors" />
         </div>
 
-        <nav className="flex-1 px-4 py-6 space-y-1">
-          {navItems.map((item) => (
-            <NavLink key={item.href} item={item} />
-          ))}
-        </nav>
+        {/* Hover catcher when sidebar closed — wider invisible zone */}
+        {!sidebarOpen && (
+          <div
+            className="absolute inset-y-0 left-0 w-4 z-[5]"
+            onMouseEnter={openSidebar}
+          />
+        )}
 
-        <div className="p-4 border-t border-[#2A4D70]">
-          <div className="flex items-center space-x-3">
-            <Avatar className="h-9 w-9 border border-[#2196F3]">
-              <AvatarImage src={user?.imageUrl} />
-              <AvatarFallback className="bg-[#2A4D70] text-white">
-                {user?.firstName?.charAt(0) || "U"}
-              </AvatarFallback>
-            </Avatar>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-white truncate">{user?.fullName || "User"}</p>
-              <p className="text-xs text-blue-200 truncate capitalize">
-                {me?.role || (user?.publicMetadata?.role as string) || "Dispatcher"}
-              </p>
-            </div>
-            <button
-              onClick={() => signOut({ redirectUrl: "/" })}
-              className="text-blue-200 hover:text-white transition-colors"
-              data-testid="button-logout"
-            >
-              <LogOut size={18} />
-            </button>
+        {/* Sidebar panel */}
+        <aside
+          className={`absolute inset-y-0 left-0 w-[260px] flex flex-col overflow-hidden transition-transform duration-300 ease-out shadow-2xl shadow-black/30 ${
+            sidebarOpen ? "translate-x-0" : "-translate-x-full"
+          }`}
+          style={{
+            background: "linear-gradient(180deg, #1A3C5E 0%, #152e47 55%, #0f2236 100%)",
+          }}
+          onMouseEnter={openSidebar}
+        >
+          {sidebarContent()}
+        </aside>
+
+        {/* Subtle edge hint when open */}
+        {sidebarOpen && (
+          <div className="absolute top-1/2 -translate-y-1/2 left-[260px] pointer-events-none">
+            <ChevronRight className="h-4 w-4 text-primary/40" />
           </div>
-        </div>
-      </aside>
+        )}
+      </div>
 
-      {/* Mobile Sidebar overlay */}
+      {/* Mobile overlay menu */}
       {isMobileMenuOpen && (
         <div
-          className="md:hidden fixed inset-0 z-40 bg-black/50"
+          className="md:hidden fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
           onClick={() => setIsMobileMenuOpen(false)}
         />
       )}
 
-      {/* Mobile Sidebar */}
       <div
-        className={`md:hidden fixed inset-y-0 left-0 z-50 w-64 bg-[#1A3C5E] transform transition-transform duration-200 ease-in-out ${
+        className={`md:hidden fixed inset-y-0 left-0 z-50 w-[260px] flex flex-col transform transition-transform duration-300 ease-out shadow-2xl ${
           isMobileMenuOpen ? "translate-x-0" : "-translate-x-full"
         }`}
+        style={{
+          background: "linear-gradient(180deg, #1A3C5E 0%, #152e47 55%, #0f2236 100%)",
+        }}
       >
-        <div className="flex items-center justify-between p-4 border-b border-[#2A4D70]">
-          <span className="font-bold text-white text-lg">LoadBoard Pro</span>
-          <button onClick={() => setIsMobileMenuOpen(false)} className="text-blue-200 hover:text-white">
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-white/10 gap-2">
+          <LoadBoardProLogo onDarkPanel className="h-16 w-auto min-w-0 flex-1 max-w-[300px]" />
+          <button
+            onClick={() => setIsMobileMenuOpen(false)}
+            className="p-1.5 rounded-md text-blue-200 hover:text-white hover:bg-white/10"
+          >
             <X size={20} />
           </button>
         </div>
-        <nav className="p-4 space-y-1">
+        <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
           {navItems.map((item) => (
             <NavLink key={item.href} item={item} onClick={() => setIsMobileMenuOpen(false)} />
           ))}
         </nav>
+        <div className="p-4 border-t border-white/10 flex items-center justify-center gap-2">
+          <ThemeToggle compact />
+          <LanguageSwitcher compact />
+        </div>
       </div>
 
-      {/* Main Content */}
-      <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Mobile Header */}
-        <header className="md:hidden bg-white border-b border-gray-200 p-4 flex items-center justify-between shadow-sm z-10">
-          <button onClick={() => setIsMobileMenuOpen(true)} className="text-gray-500 hover:text-[#1A3C5E]">
+      <main className="flex-1 flex flex-col min-w-0 overflow-hidden w-full">
+        <header className="md:hidden bg-card border-b border-border p-4 flex items-center justify-between shadow-sm z-10">
+          <button
+            onClick={() => setIsMobileMenuOpen(true)}
+            className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted"
+          >
             <Menu size={24} />
           </button>
-          <span className="font-bold text-[#1A3C5E]">LoadBoard Pro</span>
-          <div className="flex items-center space-x-4">
-            <Link href="/notifications" className="text-gray-500 hover:text-[#1A3C5E] relative">
-              <Bell size={20} />
-              {unreadCount > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-3 w-3">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#E65100] opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-3 w-3 bg-[#E65100]"></span>
-                </span>
-              )}
-            </Link>
-            <Avatar className="h-8 w-8">
-              <AvatarImage src={user?.imageUrl} />
-              <AvatarFallback className="bg-[#1A3C5E] text-white">
-                {user?.firstName?.charAt(0) || "U"}
-              </AvatarFallback>
-            </Avatar>
-          </div>
+          <LoadBoardProLogo className="h-12 w-auto max-w-[300px] shrink-0" />
+          <UserAvatar
+            name={displayName}
+            email={me?.email || user?.email}
+            avatarKey={me?.avatarKey}
+            className="h-8 w-8"
+            fallbackClassName="bg-primary text-primary-foreground text-sm"
+          />
         </header>
 
-        {/* Desktop Top Bar */}
-        <header className="hidden md:flex bg-white border-b border-gray-200 h-16 items-center justify-end px-6 shadow-sm z-10">
-          <div className="flex items-center space-x-4">
+        <header className="hidden md:flex bg-card/80 backdrop-blur-sm border-b border-border h-[4.5rem] items-center justify-between gap-4 px-5 shadow-sm z-10">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-1 h-5 rounded-full bg-primary/30 shrink-0" />
+            <LoadBoardProLogo className="h-14 w-auto max-w-[340px] shrink-0" />
+          </div>
+          <div className="flex items-center gap-3">
+            <ThemeToggle />
+            <LanguageSwitcher />
             <Link
               href="/notifications"
-              className="relative p-2 text-gray-500 hover:text-[#1A3C5E] hover:bg-gray-50 rounded-full transition-colors"
+              className="relative p-2 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors"
             >
               <Bell size={20} />
               {unreadCount > 0 && (
-                <span className="absolute top-1.5 right-1.5 flex h-4 w-4">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#E65100] opacity-75"></span>
+                <span className="absolute top-1 right-1 flex h-4 w-4">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#E65100] opacity-75" />
                   <span className="relative inline-flex items-center justify-center rounded-full h-4 w-4 bg-[#E65100] text-[8px] font-bold text-white">
                     {unreadCount}
                   </span>
                 </span>
               )}
             </Link>
+            <div className="flex items-center gap-2 pl-2 border-l border-border">
+              <UserAvatar
+                name={displayName}
+                email={me?.email || user?.email}
+                avatarKey={me?.avatarKey}
+                className="h-8 w-8"
+                fallbackClassName="bg-primary text-primary-foreground text-xs"
+              />
+              <span className="text-sm font-medium text-foreground hidden lg:block">{displayName}</span>
+            </div>
           </div>
         </header>
 
-        {/* Page Content */}
-        <div className="flex-1 overflow-auto bg-[#F5F7FA] p-4 md:p-8">
-          <div className="max-w-7xl mx-auto h-full flex flex-col">
+        <div
+          className={`flex-1 overflow-auto bg-background ${
+            isFullWidth ? "p-2 md:p-3" : isCompactPage ? "p-3 md:p-4" : "p-4 md:p-8"
+          }`}
+        >
+          <div
+            className={`${isFullWidth ? "w-full max-w-none" : "max-w-7xl mx-auto"} h-full flex flex-col`}
+          >
             {children}
           </div>
         </div>

@@ -1,7 +1,6 @@
-@layer theme, base, clerk, components, utilities;
+@layer theme, base, components, utilities;
 @import "tailwindcss";
 @import "tw-animate-css";
-@import '@clerk/themes/shadcn.css';
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:is(.dark *));
@@ -57,6 +56,20 @@
   --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
   --color-sidebar-accent-border: var(--sidebar-accent-border);
   --color-sidebar-ring: hsl(var(--sidebar-ring));
+
+  --color-sheet-hdr: hsl(var(--sheet-hdr));
+  --color-sheet-hdr-fg: hsl(var(--sheet-hdr-fg));
+  --color-sheet-hdr-border: hsl(var(--sheet-hdr-border));
+  --color-sheet-cell: hsl(var(--sheet-cell));
+  --color-sheet-cell-fg: hsl(var(--sheet-cell-fg));
+  --color-sheet-border: hsl(var(--sheet-border));
+  --color-sheet-readonly: hsl(var(--sheet-readonly));
+  --color-sheet-edit: hsl(var(--sheet-edit));
+  --color-sheet-total: hsl(var(--sheet-total));
+  --color-sheet-total-fg: hsl(var(--sheet-total-fg));
+  --color-sheet-cell-alt: hsl(var(--sheet-cell-alt));
+  --color-sheet-group: hsl(var(--sheet-group));
+  --color-sheet-load-id: hsl(var(--sheet-load-id));
 
   --font-sans: var(--app-font-sans);
   --font-serif: var(--app-font-serif);
@@ -158,6 +171,21 @@
   --chart-4: 0 66% 47%;
   --chart-5: 210 57% 24%;
 
+  /* Spreadsheet */
+  --sheet-hdr: 210 57% 24%;
+  --sheet-hdr-fg: 0 0% 100%;
+  --sheet-hdr-border: 210 57% 30%;
+  --sheet-cell: 0 0% 100%;
+  --sheet-cell-fg: 210 57% 15%;
+  --sheet-border: 214 20% 82%;
+  --sheet-readonly: 210 20% 98%;
+  --sheet-edit: 214 90% 95%;
+  --sheet-total: 210 57% 24%;
+  --sheet-total-fg: 0 0% 100%;
+  --sheet-cell-alt: 210 30% 97%;
+  --sheet-group: 214 45% 96%;
+  --sheet-load-id: 210 57% 24%;
+
   --app-font-sans: 'Inter', sans-serif;
   --app-font-serif: Georgia, serif;
   --app-font-mono: Menlo, monospace;
@@ -240,6 +268,20 @@
   --chart-3: 21 100% 45%;
   --chart-4: 0 66% 47%;
   --chart-5: 210 57% 40%;
+
+  --sheet-hdr: 207 80% 38%;
+  --sheet-hdr-fg: 0 0% 100%;
+  --sheet-hdr-border: 207 85% 48%;
+  --sheet-cell: 210 40% 19%;
+  --sheet-cell-fg: 210 25% 96%;
+  --sheet-border: 210 35% 34%;
+  --sheet-readonly: 210 38% 15%;
+  --sheet-edit: 207 55% 28%;
+  --sheet-total: 207 75% 32%;
+  --sheet-total-fg: 0 0% 100%;
+  --sheet-cell-alt: 210 42% 15%;
+  --sheet-group: 210 48% 24%;
+  --sheet-load-id: 199 95% 72%;
 }
 
 @layer base {
@@ -320,5 +362,23 @@
   .border.active-elevate-2:not(.no-active-interaction-elevate)::after,
   .border.hover-elevate:not(.no-hover-interaction-elevate)::after {
     inset: -1px;
+  }
+
+  /* Loads spreadsheet: zebra rows + totals separator */
+  tr.sheet-row-alt > td {
+    background-color: hsl(var(--sheet-cell-alt));
+  }
+
+  tr.sheet-row-alt > td.bg-sheet-readonly,
+  tr.sheet-row-alt > td[class*="bg-sheet-readonly"] {
+    background-color: hsl(var(--sheet-readonly));
+  }
+
+  tr.sheet-totals-row > td {
+    border-top: 2px solid hsl(var(--sheet-hdr-border));
+  }
+
+  tr.sheet-row-locked > td {
+    background-color: hsl(var(--sheet-readonly) / 0.85);
   }
 }

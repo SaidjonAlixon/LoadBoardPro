@@ -1,16 +1,65 @@
 import { Router } from "express";
 import { db, loadsTable, driversTable, usersTable, brokersTable } from "@workspace/db";
-import { eq, and, sql, desc, inArray } from "drizzle-orm";
-import { requireAuth } from "../middlewares/requireAuth";
+import { eq, and, sql, desc, inArray, gte, lte } from "drizzle-orm";
+import { requireAuth, type AuthRequest } from "../middlewares/requireAuth";
 
 const router = Router();
 
+const ON_LOAD_STATUSES = ["Booked", "InQM", "NeedRevRC", "Issue", "PickedUp"] as const;
+
+function todayIso(): string {
+  return new Date().toISOString().split("T")[0];
+}
+
+async function getDriversOnLoadTodayIds(dispatcherId?: string): Promise<Set<string>> {
+  const today = todayIso();
+
+  const onLoadConditions = [
+    eq(loadsTable.isDeleted, false),
+    inArray(loadsTable.status, [...ON_LOAD_STATUSES]),
+    lte(loadsTable.puDate, today),
+    gte(loadsTable.delDate, today),
+  ];
+  if (dispatcherId) {
+    onLoadConditions.push(eq(loadsTable.dispatcherId, dispatcherId));
+  }
+
+  const onLoadRows = await db
+    .select({ driverId: loadsTable.driverId })
+    .from(loadsTable)
+    .where(and(...onLoadConditions));
+
+  return new Set(
+    onLoadRows.map((r) => r.driverId).filter((id): id is string => Boolean(id)),
+  );
+}
+
+async function computeDriverStatusToday(dispatcherId?: string) {
+  const activeDrivers = await db
+    .select({ id: driversTable.id })
+    .from(driversTable)
+    .where(eq(driversTable.isActive, true));
+
+  const driversOnLoadSet = await getDriversOnLoadTodayIds(dispatcherId);
+
+  const totalDrivers = activeDrivers.length;
+  const driversOnLoad = activeDrivers.filter((d) => driversOnLoadSet.has(d.id)).length;
+  const driversEmpty = Math.max(0, totalDrivers - driversOnLoad);
+
+  return { totalDrivers, driversOnLoad, driversEmpty, driversOnLoadSet };
+}
+
 // GET /api/weekly — list available week periods
-router.get("/", requireAuth, async (_req, res) => {
+router.get("/", requireAuth, async (req: AuthRequest, res) => {
+  const weekConditions = [eq(loadsTable.isDeleted, false)];
+  if (req.userRole === "dispatcher" && req.userId) {
+    weekConditions.push(eq(loadsTable.dispatcherId, req.userId));
+  }
+
   const weeks = await db
     .selectDistinct({ weekStart: loadsTable.weekStart })
     .from(loadsTable)
-    .where(eq(loadsTable.isDeleted, false))
+    .where(and(...weekConditions))
     .orderBy(desc(loadsTable.weekStart))
     .limit(52);
 
@@ -34,7 +83,7 @@ router.get("/", requireAuth, async (_req, res) => {
       totalGross: sql<number>`coalesce(sum(${loadsTable.rate}::numeric + ${loadsTable.reimbursement}::numeric), 0)`,
     })
     .from(loadsTable)
-    .where(eq(loadsTable.isDeleted, false))
+    .where(and(...weekConditions))
     .groupBy(loadsTable.weekStart);
 
   const countMap = Object.fromEntries(counts.map(c => [c.weekStart, c]));
@@ -46,25 +95,79 @@ router.get("/", requireAuth, async (_req, res) => {
 });
 
 // GET /api/weekly/:weekStart
-router.get("/:weekStart", requireAuth, async (req, res) => {
+router.get("/:weekStart", requireAuth, async (req: AuthRequest, res) => {
   const { weekStart } = req.params;
   const weekEnd = new Date(weekStart);
   weekEnd.setDate(weekEnd.getDate() + 6);
   const weekEndStr = weekEnd.toISOString().split("T")[0];
 
+  const dispatcherFilter =
+    req.userRole === "dispatcher" && req.userId ? req.userId : undefined;
+  const { driversOnLoadSet, ...driverStatus } = await computeDriverStatusToday(dispatcherFilter);
+
+  const loadConditions = [
+    eq(loadsTable.weekStart, weekStart),
+    eq(loadsTable.isDeleted, false),
+  ];
+  if (dispatcherFilter) {
+    loadConditions.push(eq(loadsTable.dispatcherId, dispatcherFilter));
+  }
+
   const loads = await db
     .select()
     .from(loadsTable)
-    .where(and(eq(loadsTable.weekStart, weekStart), eq(loadsTable.isDeleted, false)))
-    .orderBy(loadsTable.puDate);
+    .where(and(...loadConditions))
+    .orderBy(loadsTable.sortOrder, loadsTable.puDate);
 
-  if (!loads.length) {
-    res.json({
+  const activeDrivers = await db
+    .select()
+    .from(driversTable)
+    .where(eq(driversTable.isActive, true))
+    .orderBy(driversTable.fullName);
+
+  const buildEmptyResponse = () => {
+    const emptyBlocks = activeDrivers.map((driver) => ({
+      driver: {
+        id: driver.id,
+        fullName: driver.fullName,
+        driverType: driver.driverType,
+        phone: driver.phone,
+        email: driver.email,
+        truckNumber: driver.truckNumber,
+        isActive: driver.isActive,
+        createdAt: driver.createdAt,
+      },
+      loads: [] as never[],
+      totalGross: 0,
+      totalMiles: 0,
+      totalReimbursement: 0,
+    }));
+
+    const driversOnLoadToday = emptyBlocks.filter((b) => driversOnLoadSet.has(b.driver.id));
+    const driversEmptyToday = emptyBlocks.filter((b) => !driversOnLoadSet.has(b.driver.id));
+
+    return {
       weekStart,
       weekEnd: weekEndStr,
       drivers: [],
-      kpi: { totalGross: 0, totalMileage: 0, avgRpm: 0, activeDrivers: 0, totalReimbursement: 0, ooCount: 0, cdCount: 0, grossPerDriver: 0 },
-    });
+      driversOnLoadToday,
+      driversEmptyToday,
+      driverStatus,
+      kpi: {
+        totalGross: 0,
+        totalMileage: 0,
+        avgRpm: 0,
+        activeDrivers: 0,
+        totalReimbursement: 0,
+        ooCount: 0,
+        cdCount: 0,
+        grossPerDriver: 0,
+      },
+    };
+  };
+
+  if (!loads.length) {
+    res.json(buildEmptyResponse());
     return;
   }
 
@@ -122,6 +225,47 @@ router.get("/:weekStart", requireAuth, async (req, res) => {
     };
   });
 
+  const blockByDriverId = new Map(
+    driverBlocks
+      .filter((b) => b.driver.id !== "unassigned")
+      .map((b) => [b.driver.id, b]),
+  );
+  const unassignedBlock = driverBlocks.find((b) => b.driver.id === "unassigned");
+
+  const allDriverBlocks = activeDrivers.map((driver) => {
+    const existing = blockByDriverId.get(driver.id);
+    if (existing) return existing;
+    return {
+      driver: {
+        id: driver.id,
+        fullName: driver.fullName,
+        driverType: driver.driverType,
+        phone: driver.phone,
+        email: driver.email,
+        truckNumber: driver.truckNumber,
+        isActive: driver.isActive,
+        createdAt: driver.createdAt,
+      },
+      loads: [],
+      totalGross: 0,
+      totalMiles: 0,
+      totalReimbursement: 0,
+    };
+  });
+
+  const driversOnLoadToday = allDriverBlocks.filter((b) => driversOnLoadSet.has(b.driver.id));
+  const driversEmptyToday = allDriverBlocks.filter((b) => !driversOnLoadSet.has(b.driver.id));
+  if (unassignedBlock) {
+    const unassignedOnLoad = unassignedBlock.loads.some(
+      (l) =>
+        ON_LOAD_STATUSES.includes(l.status as (typeof ON_LOAD_STATUSES)[number]) &&
+        l.puDate <= todayIso() &&
+        l.delDate >= todayIso(),
+    );
+    if (unassignedOnLoad) driversOnLoadToday.push(unassignedBlock);
+    else driversEmptyToday.push(unassignedBlock);
+  }
+
   const allGross = loads.reduce((sum, l) => sum + Number(l.rate) + Number(l.reimbursement), 0);
   const allMiles = loads.reduce((sum, l) => sum + Number(l.mileage), 0);
   const allReimb = loads.reduce((sum, l) => sum + Number(l.reimbursement), 0);
@@ -134,6 +278,9 @@ router.get("/:weekStart", requireAuth, async (req, res) => {
     weekStart,
     weekEnd: weekEndStr,
     drivers: driverBlocks,
+    driversOnLoadToday,
+    driversEmptyToday,
+    driverStatus,
     kpi: {
       totalGross: allGross,
       totalMileage: allMiles,

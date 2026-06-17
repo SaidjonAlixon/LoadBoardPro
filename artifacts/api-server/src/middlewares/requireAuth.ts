@@ -1,48 +1,36 @@
-import { getAuth } from "@clerk/express";
 import { db, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import type { Request, Response, NextFunction } from "express";
+import { SESSION_COOKIE, verifySessionToken } from "../lib/auth";
 
 export type AuthRole = "admin" | "dispatcher" | "accounting" | "driver";
 
 export interface AuthRequest extends Request {
   userId?: string;
-  clerkId?: string;
   userRole?: AuthRole;
   dbUser?: typeof usersTable.$inferSelect;
 }
 
 export const requireAuth = async (req: AuthRequest, res: Response, next: NextFunction) => {
-  const auth = getAuth(req);
-  const clerkId = auth?.userId;
-  if (!clerkId) {
+  const token = req.cookies?.[SESSION_COOKIE] as string | undefined;
+  if (!token) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  const userId = await verifySessionToken(token);
+  if (!userId) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
 
   try {
-    let user = await db.query.usersTable.findFirst({ where: eq(usersTable.clerkId, clerkId) });
-    if (!user) {
-      // Just-in-time provisioning — upsert on clerkId to avoid race-condition duplicates.
-      // Clerk sometimes delivers an empty email on the first request; handle gracefully.
-      const email = (auth as any).sessionClaims?.email as string | undefined ?? "";
-      const name = (auth as any).sessionClaims?.name as string | undefined ?? null;
-      const [upserted] = await db
-        .insert(usersTable)
-        .values({ id: crypto.randomUUID(), clerkId, email, name, role: "dispatcher" })
-        .onConflictDoUpdate({
-          target: usersTable.clerkId,
-          set: {
-            // refresh email/name if Clerk later provides them
-            email: email || undefined,
-            name: name || undefined,
-          },
-        })
-        .returning();
-      user = upserted;
+    const user = await db.query.usersTable.findFirst({ where: eq(usersTable.id, userId) });
+    if (!user || !user.isActive) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
     }
 
-    req.clerkId = clerkId;
     req.userId = user.id;
     req.userRole = user.role as AuthRole;
     req.dbUser = user;

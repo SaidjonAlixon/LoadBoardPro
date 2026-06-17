@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { db, loadsTable, driversTable, usersTable, brokersTable, notificationsTable } from "@workspace/db";
-import { eq, and, or, like, ilike, desc, gte, lte, sql, inArray } from "drizzle-orm";
+import { eq, and, or, like, ilike, desc, gte, lte, sql, inArray, asc, isNull } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/requireAuth";
+import { isLoadDispatcherLocked } from "../lib/load-statuses";
 
 const router = Router();
 
@@ -52,6 +53,7 @@ function serializeLoad(
     brokerPaid: l.brokerPaid !== null ? Number(l.brokerPaid) : null,
     notes: l.notes,
     weekStart: l.weekStart,
+    sortOrder: l.sortOrder,
     irDiff,
     biDiff,
     createdAt: l.createdAt,
@@ -63,7 +65,7 @@ function serializeDriver(d: typeof driversTable.$inferSelect) {
   return { id: d.id, fullName: d.fullName, driverType: d.driverType, phone: d.phone, email: d.email, truckNumber: d.truckNumber, isActive: d.isActive, createdAt: d.createdAt };
 }
 function serializeUser(u: typeof usersTable.$inferSelect) {
-  return { id: u.id, clerkId: u.clerkId, email: u.email, name: u.name, role: u.role, isActive: u.isActive, createdAt: u.createdAt };
+  return { id: u.id, email: u.email, name: u.name, role: u.role, isActive: u.isActive, createdAt: u.createdAt };
 }
 function serializeBroker(b: typeof brokersTable.$inferSelect) {
   return { id: b.id, name: b.name, mcNumber: b.mcNumber, contact: b.contact, email: b.email, phone: b.phone, createdAt: b.createdAt };
@@ -105,7 +107,7 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
   const offset = (pageNum - 1) * limitNum;
 
   const [loads, countResult] = await Promise.all([
-    db.select().from(loadsTable).where(and(...conditions)).orderBy(desc(loadsTable.createdAt)).limit(limitNum).offset(offset),
+    db.select().from(loadsTable).where(and(...conditions)).orderBy(asc(loadsTable.sortOrder), asc(loadsTable.createdAt)).limit(limitNum).offset(offset),
     db.select({ count: sql<number>`count(*)::int` }).from(loadsTable).where(and(...conditions)),
   ]);
 
@@ -146,6 +148,15 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
     mileage, rate, status, reimbursement, dispatchNotes, notes, weekStart
   } = req.body;
 
+  const driverKey = driverId ?? null;
+  const driverCondition = driverKey
+    ? eq(loadsTable.driverId, driverKey)
+    : isNull(loadsTable.driverId);
+  const [maxRow] = await db
+    .select({ max: sql<number>`coalesce(max(${loadsTable.sortOrder}), -1)` })
+    .from(loadsTable)
+    .where(and(eq(loadsTable.isDeleted, false), driverCondition));
+
   const [load] = await db.insert(loadsTable).values({
     id: crypto.randomUUID(),
     loadNumber,
@@ -165,9 +176,54 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
     dispatchNotes: dispatchNotes ?? null,
     notes: notes ?? null,
     weekStart,
+    sortOrder: Number(maxRow?.max ?? -1) + 1,
   }).returning();
 
   res.status(201).json(serializeLoad(load));
+});
+
+// POST /api/loads/reorder — reorder loads within a driver group
+router.post("/reorder", requireAuth, requireRole("admin", "dispatcher"), async (req: AuthRequest, res) => {
+  const { driverId, loadIds } = req.body as { driverId?: string | null; loadIds?: string[] };
+
+  if (!Array.isArray(loadIds) || loadIds.length === 0) {
+    res.status(400).json({ error: "loadIds required" });
+    return;
+  }
+
+  const normalizedDriverId = driverId ?? null;
+  const rows = await db
+    .select()
+    .from(loadsTable)
+    .where(and(eq(loadsTable.isDeleted, false), inArray(loadsTable.id, loadIds)));
+
+  if (rows.length !== loadIds.length) {
+    res.status(400).json({ error: "Invalid load ids" });
+    return;
+  }
+
+  for (const row of rows) {
+    if ((row.driverId ?? null) !== normalizedDriverId) {
+      res.status(400).json({ error: "Loads must belong to the same driver" });
+      return;
+    }
+    if (req.userRole === "dispatcher" && row.dispatcherId !== req.userId) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+    if (req.userRole === "dispatcher" && isLoadDispatcherLocked(row.status)) {
+      res.status(403).json({ error: "Load is locked for accounting review" });
+      return;
+    }
+  }
+
+  await Promise.all(
+    loadIds.map((id, index) =>
+      db.update(loadsTable).set({ sortOrder: index }).where(eq(loadsTable.id, id)),
+    ),
+  );
+
+  res.status(204).send();
 });
 
 // GET /api/loads/:id
@@ -189,11 +245,27 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
   const load = await db.query.loadsTable.findFirst({ where: and(eq(loadsTable.id, req.params.id), eq(loadsTable.isDeleted, false)) });
   if (!load) { res.status(404).json({ error: "Not found" }); return; }
 
-  // Accounting role: can only update invoicedAmount, brokerPaid, notes
+  if (isLoadDispatcherLocked(load.status) && req.userRole !== "accounting") {
+    res.status(403).json({ error: "Load is locked for accounting review" });
+    return;
+  }
+
+  // Role-based field restrictions
   const isAccounting = req.userRole === "accounting";
+  const isDispatcher = req.userRole === "dispatcher";
+
+  const dispatcherFields = [
+    "loadNumber", "brokerId",
+    "puDate", "delDate", "originCity", "originState", "destCity", "destState",
+    "mileage", "rate", "reimbursement", "dispatchNotes", "status",
+  ];
+  const accountingFields = ["invoicedAmount", "brokerPaid", "notes", "status"];
+
   const allowed = isAccounting
-    ? ["invoicedAmount", "brokerPaid", "notes"]
-    : Object.keys(req.body);
+    ? accountingFields
+    : isDispatcher
+      ? dispatcherFields
+      : Object.keys(req.body);
 
   const updates: Record<string, unknown> = {};
   const body = req.body;
@@ -221,6 +293,15 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
 
   for (const key of allowed) {
     if (key in fieldMap && body[key] !== undefined) {
+      if (key === "status" && isDispatcher) {
+        const dispatcherStatuses = [
+          "Booked", "InQM", "Delivered", "Canceled", "Completed", "NeedRevRC", "Issue",
+        ];
+        if (!dispatcherStatuses.includes(body[key])) {
+          res.status(403).json({ error: "Invalid status for dispatcher" });
+          return;
+        }
+      }
       const col = fieldMap[key];
       if (["mileage", "rate", "reimbursement", "invoicedAmount", "brokerPaid"].includes(col)) {
         updates[col] = body[key] !== null ? String(body[key]) : null;
@@ -230,7 +311,16 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
     }
   }
 
+  if (Object.keys(updates).length === 0) {
+    res.status(400).json({ error: "No valid fields to update" });
+    return;
+  }
+
   const [updated] = await db.update(loadsTable).set(updates).where(eq(loadsTable.id, req.params.id)).returning();
+  if (!updated) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
 
   // Notify accounting if B-I diff is negative
   const { biDiff } = computeDiffs(updated);
@@ -250,8 +340,19 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
   res.json(serializeLoad(updated));
 });
 
-// DELETE /api/loads/:id (admin only, soft delete)
-router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
+// DELETE /api/loads/:id (admin + dispatcher, soft delete)
+router.delete("/:id", requireAuth, requireRole("admin", "dispatcher"), async (req: AuthRequest, res) => {
+  const load = await db.query.loadsTable.findFirst({
+    where: and(eq(loadsTable.id, req.params.id), eq(loadsTable.isDeleted, false)),
+  });
+  if (!load) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  if (req.userRole === "dispatcher" && isLoadDispatcherLocked(load.status)) {
+    res.status(403).json({ error: "Load is locked for accounting review" });
+    return;
+  }
   await db.update(loadsTable).set({ isDeleted: true }).where(eq(loadsTable.id, req.params.id));
   res.status(204).send();
 });
@@ -259,7 +360,10 @@ router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
 // GET /api/accounting/summary
 router.get("/accounting/summary", requireAuth, async (req, res) => {
   const { dateFrom, dateTo } = req.query as Record<string, string>;
-  const conditions = [eq(loadsTable.isDeleted, false), eq(loadsTable.status, "Delivered")];
+  const conditions = [
+    eq(loadsTable.isDeleted, false),
+    inArray(loadsTable.status, ["Delivered", "Completed"]),
+  ];
   if (dateFrom) conditions.push(gte(loadsTable.puDate, dateFrom));
   if (dateTo) conditions.push(lte(loadsTable.puDate, dateTo));
 

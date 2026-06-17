@@ -6,9 +6,10 @@ export const userRoleEnum = pgEnum("user_role", ["admin", "dispatcher", "account
 
 export const usersTable = pgTable("users", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-  clerkId: text("clerk_id").notNull().unique(),
   email: text("email").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
   name: text("name"),
+  avatarKey: text("avatar_key"),
   role: userRoleEnum("role").notNull().default("dispatcher"),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
