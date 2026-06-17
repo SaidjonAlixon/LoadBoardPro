@@ -9,6 +9,9 @@
     "api/index.js": {
       "maxDuration": 30,
       "includeFiles": "artifacts/api-server/dist/**"
+    },
+    "api/healthz.js": {
+      "maxDuration": 10
     }
   },
   "rewrites": [

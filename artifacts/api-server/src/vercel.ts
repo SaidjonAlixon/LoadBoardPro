@@ -1,9 +1,4 @@
-import serverless from "serverless-http";
 import app from "./app";
 
-// serverless-http for reliable path handling on Vercel/Lambda
-const handler = serverless(app, {
-  binary: ["image/*", "application/octet-stream"],
-});
-
-export default handler;
+// Vercel runs Express apps natively — avoid serverless-http (can hang on cold start).
+export default app;

@@ -9,10 +9,3 @@ export default async function handler(req, res) {
   }
   return cached(req, res);
 }
-
-export const config = {
-  api: {
-    bodyParser: false,
-    externalResolver: true,
-  },
-};
