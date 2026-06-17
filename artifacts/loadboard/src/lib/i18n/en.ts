@@ -95,6 +95,8 @@ const en = {
     passwordMinPlaceholder: "Min. 8 characters",
     loginFailed: "Login failed",
     registrationFailed: "Registration failed",
+    showPassword: "Show password",
+    hidePassword: "Hide password",
     adminOnlySignup: "Accounts are created by your administrator. Use the email and password they provided.",
   },
 

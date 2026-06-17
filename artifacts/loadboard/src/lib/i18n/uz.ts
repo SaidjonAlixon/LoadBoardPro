@@ -95,6 +95,8 @@ const uz = {
     passwordMinPlaceholder: "Kamida 8 belgi",
     loginFailed: "Kirish muvaffaqiyatsiz",
     registrationFailed: "Ro'yxatdan o'tish muvaffaqiyatsiz",
+    showPassword: "Parolni ko'rsatish",
+    hidePassword: "Parolni yashirish",
     adminOnlySignup: "Hisoblar faqat administrator tomonidan yaratiladi. Sizga berilgan email va paroldan foydalaning.",
   },
 
