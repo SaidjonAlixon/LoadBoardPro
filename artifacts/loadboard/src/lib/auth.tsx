@@ -30,10 +30,21 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 async function fetchSession(): Promise<AuthUser | null> {
-  const res = await fetch("/api/auth/session", { credentials: "include" });
-  if (res.status === 401) return null;
-  if (!res.ok) throw new Error("Failed to load session");
-  return res.json();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const res = await fetch("/api/auth/session", {
+      credentials: "include",
+      signal: controller.signal,
+    });
+    if (res.status === 401) return null;
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -49,6 +60,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     fetchSession()
       .then(setUser)
+      .catch(() => setUser(null))
       .finally(() => setIsLoading(false));
   }, []);
 

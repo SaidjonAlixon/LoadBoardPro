@@ -24,16 +24,24 @@ import { ThemeProvider } from "next-themes";
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 
+function AppLoading() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background text-muted-foreground text-sm">
+      Loading…
+    </div>
+  );
+}
+
 function HomeRedirect() {
   const { user, isLoading } = useAuth();
-  if (isLoading) return null;
+  if (isLoading) return <AppLoading />;
   if (user) return <Redirect to="/dashboard" />;
   return <Home />;
 }
 
 function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
   const { user, isLoading } = useAuth();
-  if (isLoading) return null;
+  if (isLoading) return <AppLoading />;
   if (!user) return <Redirect to="/sign-in" />;
   return (
     <Layout>
@@ -44,7 +52,7 @@ function ProtectedRoute({ component: Component }: { component: React.ComponentTy
 
 function AccountingRoute() {
   const { user, isLoading } = useAuth();
-  if (isLoading) return null;
+  if (isLoading) return <AppLoading />;
   if (!user) return <Redirect to="/sign-in" />;
   if (user.role !== "admin" && user.role !== "accounting") {
     return <Redirect to="/dashboard" />;
