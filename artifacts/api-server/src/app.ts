@@ -8,6 +8,19 @@ import { logger } from "./lib/logger";
 
 const app: Express = express();
 
+// Vercel rewrites /api/* → /api; ensure Express still sees the full path
+if (process.env.VERCEL) {
+  app.use((req, _res, next) => {
+    const raw = req.url ?? "/";
+    const q = raw.includes("?") ? raw.slice(raw.indexOf("?")) : "";
+    const path = raw.split("?")[0] ?? "/";
+    if (!path.startsWith("/api")) {
+      req.url = `/api${path === "/" ? "" : path}${q}`;
+    }
+    next();
+  });
+}
+
 app.use(
   pinoHttp({
     logger,
