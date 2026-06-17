@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build as esbuild } from "esbuild";
 import esbuildPluginPino from "esbuild-plugin-pino";
-import { rm } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 
 // Plugins (e.g. 'esbuild-plugin-pino') may use `require` to resolve dependencies
 globalThis.require = createRequire(import.meta.url);
@@ -121,6 +121,14 @@ globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
     `,
     },
   });
+
+  await writeFile(
+    path.resolve(distDir, "vercel.mjs.d.ts"),
+    `import type { VercelRequest, VercelResponse } from "@vercel/node";
+declare const handler: (req: VercelRequest, res: VercelResponse) => Promise<unknown>;
+export default handler;
+`,
+  );
 }
 
 buildAll().catch((err) => {

@@ -9,5 +9,5 @@
     "noEmit": true,
     "isolatedModules": true
   },
-  "include": ["./**/*.ts"]
+  "include": ["./**/*.ts", "./**/*.d.ts", "../artifacts/api-server/dist/**/*.d.ts"]
 }
