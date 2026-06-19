@@ -26,6 +26,7 @@ interface SheetEditableCellProps {
   title?: string;
   tooltip?: string;
   autoEdit?: boolean;
+  validationState?: "valid" | "invalid" | "neutral";
 }
 
 export function SheetEditableCell({
@@ -40,6 +41,7 @@ export function SheetEditableCell({
   title,
   tooltip,
   autoEdit = false,
+  validationState = "neutral",
 }: SheetEditableCellProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -109,6 +111,13 @@ export function SheetEditableCell({
     }
   };
 
+  const validationCls =
+    validationState === "valid"
+      ? "bg-green-100 ring-1 ring-inset ring-green-500"
+      : validationState === "invalid"
+        ? "bg-red-100 ring-1 ring-inset ring-red-500"
+        : "";
+
   const hoverTitle = tooltip ?? title ?? (selectOptions ? undefined : value || undefined);
 
   if (editing) {
@@ -148,7 +157,7 @@ export function SheetEditableCell({
     <td
       className={`px-1.5 py-0.5 border-r border-b border-sheet-border text-[11px] bg-sheet-cell text-sheet-cell-fg align-middle ${SHEET_CELL_CLIP} ${alignCls} ${
         editable ? "cursor-cell hover:bg-sheet-edit" : ""
-      } ${saving ? "opacity-60" : ""} ${className}`}
+      } ${saving ? "opacity-60" : ""} ${validationCls} ${className}`}
       onMouseDown={(e) => {
         if (editable && !saving) e.preventDefault();
       }}
@@ -161,12 +170,24 @@ export function SheetEditableCell({
 }
 
 export function parseCityState(raw: string): { city: string; state: string } {
-  const parts = raw.split(",").map((p) => p.trim());
+  const trimmed = raw.trim();
+  if (!trimmed) return { city: "", state: "" };
+  const comma = trimmed.indexOf(",");
+  if (comma === -1) return { city: trimmed, state: "" };
+  const parts = trimmed.split(",").map((p) => p.trim());
   return { city: parts[0] ?? "", state: (parts[1] ?? "").toUpperCase().slice(0, 2) };
 }
 
+export function formatLocationForEdit(city: string, state?: string | null): string {
+  const c = city?.trim();
+  if (!c || c === "-") return "";
+  const s = state?.trim();
+  if (!s || s === "-") return c;
+  return `${c}, ${s}`;
+}
+
 export function toCityState(city: string, state: string): string {
-  return `${city}, ${state}`;
+  return formatLocationForEdit(city, state);
 }
 
 /** DD.MM.YYYY -> YYYY-MM-DD for API */

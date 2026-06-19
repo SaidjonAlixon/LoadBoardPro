@@ -29,7 +29,8 @@ import {
   Search, RefreshCw, Crown, Calculator, Truck, UserCog, Trash2,
 } from "lucide-react";
 import { Link } from "wouter";
-import { useI18n, translateRole } from "@/lib/i18n";
+import { useI18n } from "@/lib/i18n";
+import { translateRole } from "@/lib/i18n/translate";
 import { toast } from "sonner";
 
 const ROLE_COLORS: Record<string, string> = {

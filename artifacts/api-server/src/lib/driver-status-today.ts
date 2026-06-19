@@ -1,5 +1,5 @@
 import { db, loadsTable, driversTable, usersTable, brokersTable } from "@workspace/db";
-import { eq, and, inArray, gte, lte } from "drizzle-orm";
+import { eq, and, inArray, gte, lte, isNull } from "drizzle-orm";
 
 export const ON_LOAD_STATUSES = ["Booked", "InQM", "NeedRevRC", "Issue", "PickedUp"] as const;
 
@@ -13,7 +13,7 @@ export async function getDriversTodayStatus(dispatcherId?: string) {
   const activeDrivers = await db
     .select()
     .from(driversTable)
-    .where(eq(driversTable.isActive, true))
+    .where(and(eq(driversTable.isActive, true), isNull(driversTable.deletedAt)))
     .orderBy(driversTable.fullName);
 
   const onLoadConditions = [

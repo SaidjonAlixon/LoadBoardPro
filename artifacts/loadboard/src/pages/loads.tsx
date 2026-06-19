@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
-import { useListLoads, useListDrivers, useListBrokers, useGetMe } from "@workspace/api-client-react";
+import { useState, useEffect, useCallback } from "react";
+import { useListLoads, useListDrivers, useListBrokers, useGetMe, type User } from "@workspace/api-client-react";
 import { resolveBrokerIdByName } from "@/lib/resolve-broker";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -21,10 +21,22 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Search, Plus, Filter, X, AlertTriangle } from "lucide-react";
-import { useI18n, translateLoadStatus } from "@/lib/i18n";
+import { Search, Plus, Filter, X, AlertTriangle, Download } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
+import { translateLoadStatus } from "@/lib/i18n/translate";
 import { DISPATCHER_LOAD_STATUSES } from "@/lib/load-statuses";
+import { formatWeekRangeLabel, getMondayOfWeek, getThisWeekStart, normalizeWeekStart } from "@/lib/date-range";
+import {
+  DISPATCHER_REQUIRED_FIELD_LABEL_KEYS,
+  getDispatcherLoadMissingFields,
+} from "@/lib/validate-dispatcher-load";
+import { toast } from "sonner";
 import { LoadsSpreadsheet } from "@/components/loads-spreadsheet";
+import type { BoardWeek } from "@/components/loads-week-toolbar";
+import { fetchAllFilteredLoads } from "@/lib/export-dashboard-excel";
+import { exportLoadsBoardExcel, getLoadsBoardExportLabels } from "@/lib/export-loads-excel";
+
+const BOARD_WEEK_KEY = "lb_board_week";
 
 const US_STATES = [
   "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
@@ -38,16 +50,6 @@ const DRIVER_TYPE_KEYS: Record<string, string> = {
   CD: "drivers.cdShort",
   Lease: "drivers.lease",
 };
-
-function getMondayOfWeek(dateStr: string): string {
-  if (!dateStr) return "";
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return "";
-  const day = d.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
-  return d.toISOString().split("T")[0];
-}
 
 interface LoadForm {
   loadNumber: string;
@@ -300,6 +302,25 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const missing = getDispatcherLoadMissingFields({
+      loadNumber: form.loadNumber,
+      puDate: form.puDate,
+      delDate: form.delDate || form.puDate,
+      originCity: form.originCity,
+      originState: form.originState,
+      destCity: form.destCity,
+      destState: form.destState,
+      mileage: form.mileage ? Number(form.mileage) : 0,
+      rate: form.rate ? Number(form.rate) : 0,
+      reimbursement:
+        form.reimbursement === "" ? null : Number(form.reimbursement),
+      status: form.status,
+    });
+    if (missing.length > 0) {
+      const labels = missing.map((k) => t(DISPATCHER_REQUIRED_FIELD_LABEL_KEYS[k]));
+      toast.error(t("loads.validation.completeRequired", { fields: labels.join(", ") }));
+      return;
+    }
     mutation.mutate(form);
   };
 
@@ -549,7 +570,9 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="reimbursement">{t("loads.reimbursement")}</Label>
+              <Label htmlFor="reimbursement">
+                {t("loads.reimbursement")} <span className="text-red-500">*</span>
+              </Label>
               <Input
                 id="reimbursement"
                 type="number"
@@ -557,6 +580,7 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
                 step="0.01"
                 value={form.reimbursement}
                 onChange={set("reimbursement")}
+                required
                 placeholder={t("loads.reimbPh")}
                 className="border-border focus:border-primary"
               />
@@ -629,7 +653,13 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
 interface Filters {
   status: string;
   driverId: string;
-  brokerId: string;
+  dispatcherId: string;
+}
+
+async function listDispatchers(): Promise<User[]> {
+  const res = await fetch("/api/users/dispatchers", { credentials: "include" });
+  if (!res.ok) throw new Error("Failed to load dispatchers");
+  return res.json();
 }
 
 function FilterPanel({
@@ -637,31 +667,38 @@ function FilterPanel({
   onClose,
   filters,
   onChange,
+  canFilterDispatchers,
 }: {
   open: boolean;
   onClose: () => void;
   filters: Filters;
   onChange: (f: Filters) => void;
+  canFilterDispatchers: boolean;
 }) {
   const { t } = useI18n();
   const { data: drivers } = useListDrivers({});
-  const { data: brokers } = useListBrokers({});
+  const { data: dispatchers } = useQuery({
+    queryKey: ["/api/users/dispatchers"],
+    queryFn: listDispatchers,
+    enabled: canFilterDispatchers,
+  });
   const [local, setLocal] = useState<Filters>(filters);
 
   if (!open) return null;
 
-  const hasActive = local.status !== "" || local.driverId !== "" || local.brokerId !== "";
+  const hasActive =
+    local.status !== "" || local.driverId !== "" || local.dispatcherId !== "";
 
   return (
-    <div className="bg-card border border-border rounded-xl shadow-lg p-5 space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="font-semibold text-foreground text-sm">{t("common.filters")}</p>
+    <div className="bg-card border border-border rounded-lg shadow-sm p-3 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="font-semibold text-foreground text-xs uppercase tracking-wide">{t("common.filters")}</p>
         <div className="flex items-center gap-2">
           {hasActive && (
             <button
               className="text-xs text-muted-foreground hover:text-red-500 transition-colors"
               onClick={() => {
-                const cleared = { status: "", driverId: "", brokerId: "" };
+                const cleared = { status: "", driverId: "", dispatcherId: "" };
                 setLocal(cleared);
                 onChange(cleared);
               }}
@@ -724,96 +761,238 @@ function FilterPanel({
           </Select>
         </div>
 
-        <div className="space-y-1.5">
-          <Label className="text-xs">{t("loads.broker")}</Label>
-          <Select
-            value={local.brokerId}
-            onValueChange={(v) => {
-              const next = { ...local, brokerId: v === "_all" ? "" : v };
-              setLocal(next);
-              onChange(next);
-            }}
-          >
-            <SelectTrigger className="border-border h-9 text-sm">
-              <SelectValue placeholder={t("loads.allBrokers")} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="_all">{t("loads.allBrokers")}</SelectItem>
-              {(brokers ?? []).map((b) => (
-                <SelectItem key={b.id} value={b.id}>
-                  {b.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        {canFilterDispatchers && (
+          <div className="space-y-1.5">
+            <Label className="text-xs">{t("loads.dispatcher")}</Label>
+            <Select
+              value={local.dispatcherId}
+              onValueChange={(v) => {
+                const next = { ...local, dispatcherId: v === "_all" ? "" : v };
+                setLocal(next);
+                onChange(next);
+              }}
+            >
+              <SelectTrigger className="border-border h-9 text-sm">
+                <SelectValue placeholder={t("loads.allDispatchers")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="_all">{t("loads.allDispatchers")}</SelectItem>
+                {(dispatchers ?? []).map((d) => (
+                  <SelectItem key={d.id} value={d.id}>
+                    {d.name || d.email}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
 export default function LoadsList() {
-  const { t } = useI18n();
+  const { t, formatDate } = useI18n();
+  const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
-  const [filters, setFilters] = useState<Filters>({ status: "", driverId: "", brokerId: "" });
+  const [exporting, setExporting] = useState(false);
+  const [filters, setFilters] = useState<Filters>({ status: "", driverId: "", dispatcherId: "" });
+  const [selectedWeek, setSelectedWeek] = useState(() => {
+    try {
+      const saved = localStorage.getItem(BOARD_WEEK_KEY);
+      if (saved) return normalizeWeekStart(saved);
+    } catch {
+      /* ignore */
+    }
+    return getThisWeekStart();
+  });
 
   const activeFilters = Object.values(filters).filter(Boolean).length;
+  const compactDriverGroups = activeFilters > 0 || !!search;
 
   const { data: me } = useGetMe({});
   const userRole = me?.role ?? "dispatcher";
+  const canFilterDispatchers =
+    userRole === "admin" || userRole === "accounting" || userRole === "dispatcher";
+
+  const weekStart = selectedWeek;
+
+  const { data: boardWeeks = [] } = useQuery<BoardWeek[]>({
+    queryKey: ["/api/board-weeks"],
+    queryFn: async () => {
+      const res = await fetch("/api/board-weeks", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load weeks");
+      return res.json();
+    },
+  });
+
+  const createWeekMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/board-weeks", { method: "POST", credentials: "include" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.error ?? "Failed to create week");
+      }
+      return body as { weekStart: string };
+    },
+    onSuccess: (data) => {
+      const ws = normalizeWeekStart(data.weekStart);
+      setSelectedWeek(ws);
+      try {
+        localStorage.setItem(BOARD_WEEK_KEY, ws);
+        sessionStorage.removeItem(`lb_hidden_drivers_${ws}`);
+      } catch {
+        /* ignore */
+      }
+      void qc.invalidateQueries({ queryKey: ["/api/board-weeks"] });
+      void qc.invalidateQueries({ queryKey: ["/api/loads"] });
+      void qc.invalidateQueries({ queryKey: ["/api/weekly"] });
+      toast.success(t("loads.weekCreated"));
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || t("loads.weekCreateFailed"));
+    },
+  });
+
+  const handleWeekChange = useCallback((ws: string) => {
+    const normalized = normalizeWeekStart(ws);
+    setSelectedWeek(normalized);
+    try {
+      localStorage.setItem(BOARD_WEEK_KEY, normalized);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!boardWeeks.length) return;
+    const starts = boardWeeks.map((w) => normalizeWeekStart(w.weekStart));
+    if (!starts.includes(selectedWeek)) {
+      const fallback = starts.includes(getThisWeekStart())
+        ? getThisWeekStart()
+        : starts[0]!;
+      setSelectedWeek(fallback);
+      try {
+        localStorage.setItem(BOARD_WEEK_KEY, fallback);
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [boardWeeks, selectedWeek]);
 
   const { data: brokersData } = useListBrokers({});
-  const { data: driversData } = useListDrivers({});
+  const { data: driversData } = useListDrivers({ isActive: true });
+  const { data: dispatchers } = useQuery({
+    queryKey: ["/api/users/dispatchers"],
+    queryFn: listDispatchers,
+    enabled: canFilterDispatchers,
+  });
+
+  const handleExportExcel = useCallback(async () => {
+    setExporting(true);
+    try {
+      const params = {
+        search: search || undefined,
+        status: (filters.status as any) || undefined,
+        driverId: filters.driverId || undefined,
+        dispatcherId: canFilterDispatchers ? filters.dispatcherId || undefined : undefined,
+        weekStart,
+      };
+      const exportLoads = await fetchAllFilteredLoads(params);
+      const labels = getLoadsBoardExportLabels(t);
+      const statusValue = filters.status
+        ? translateLoadStatus(t, filters.status)
+        : labels.all;
+      const driverValue = filters.driverId
+        ? (driversData?.find((d) => d.id === filters.driverId)?.fullName ?? labels.all)
+        : labels.all;
+      const dispatcherValue = filters.dispatcherId
+        ? (dispatchers?.find((d) => d.id === filters.dispatcherId)?.name
+          ?? dispatchers?.find((d) => d.id === filters.dispatcherId)?.email
+          ?? labels.all)
+        : labels.all;
+
+      await exportLoadsBoardExcel(
+        exportLoads,
+        {
+          weekRange: formatWeekRangeLabel(weekStart, formatDate),
+          statusValue,
+          driverValue,
+          dispatcherValue,
+          searchValue: search.trim(),
+        },
+        labels,
+        (s) => translateLoadStatus(t, s),
+        formatDate,
+      );
+      toast.success(t("loads.exportSuccess"));
+    } catch {
+      toast.error(t("loads.exportFailed"));
+    } finally {
+      setExporting(false);
+    }
+  }, [
+    canFilterDispatchers,
+    dispatchers,
+    driversData,
+    filters.dispatcherId,
+    filters.driverId,
+    filters.status,
+    formatDate,
+    search,
+    t,
+    weekStart,
+  ]);
+
   const { data: loadsData, isLoading } = useListLoads({
     search: search || undefined,
     status: (filters.status as any) || undefined,
     driverId: filters.driverId || undefined,
-    brokerId: filters.brokerId || undefined,
-    limit: 100,
+    dispatcherId: canFilterDispatchers ? filters.dispatcherId || undefined : undefined,
+    weekStart,
+    limit: 500,
   });
 
   return (
-    <div className="space-y-4 flex-1 flex flex-col min-h-0">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <h1 className="text-2xl font-bold text-foreground" data-testid="page-title-loads">
-          {t("loads.title")}
-        </h1>
-        <Button
-          className="bg-accent hover:bg-accent/90 text-white shadow-sm"
-          onClick={() => setAddOpen(true)}
-          data-testid="button-add-load"
-        >
-          <Plus className="h-4 w-4 mr-2" /> {t("loads.addLoad")}
-        </Button>
-      </div>
-
-      <div className="space-y-3">
-        <div className="flex gap-3">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+    <div className="space-y-2 flex-1 flex flex-col min-h-0">
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               placeholder={t("loads.search")}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-9 bg-card border-border shadow-sm focus:border-primary"
+              className="h-9 pl-8 text-sm bg-card border-border shadow-sm focus:border-primary"
               data-testid="input-search-loads"
             />
           </div>
           <Button
             variant="outline"
-            className={`border-border shadow-sm gap-2 ${activeFilters > 0 ? "border-primary text-foreground bg-primary/10" : "text-muted-foreground"}`}
+            size="sm"
+            className={`h-9 border-border shadow-sm gap-1.5 ${activeFilters > 0 ? "border-primary text-foreground bg-primary/10" : "text-muted-foreground"}`}
             onClick={() => setFilterOpen((v) => !v)}
             data-testid="button-filter-loads"
           >
-            <Filter className="h-4 w-4" />
-            {t("common.filters")}
+            <Filter className="h-3.5 w-3.5" />
+            <span className="text-sm">{t("common.filters")}</span>
             {activeFilters > 0 && (
-              <span className="bg-primary text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold">
+              <span className="bg-primary text-white text-[10px] rounded-full min-w-4 h-4 px-1 flex items-center justify-center font-bold">
                 {activeFilters}
               </span>
             )}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 border-border shadow-sm gap-1.5 text-accent"
+            onClick={() => void handleExportExcel()}
+            disabled={exporting}
+          >
+            <Download className="h-3.5 w-3.5" />
+            <span className="text-sm">{exporting ? t("loads.exporting") : t("loads.exportExcel")}</span>
           </Button>
         </div>
 
@@ -822,6 +1001,7 @@ export default function LoadsList() {
           onClose={() => setFilterOpen(false)}
           filters={filters}
           onChange={setFilters}
+          canFilterDispatchers={canFilterDispatchers}
         />
       </div>
 
@@ -831,9 +1011,17 @@ export default function LoadsList() {
             loads={loadsData?.data ?? []}
             isLoading={isLoading}
             userRole={userRole}
+            currentUserId={me?.id}
             brokers={brokersData ?? []}
             drivers={driversData ?? []}
+            weekStart={weekStart}
+            boardWeeks={boardWeeks}
+            onWeekChange={handleWeekChange}
+            onCreateWeek={() => createWeekMutation.mutate()}
+            creatingWeek={createWeekMutation.isPending}
             onAddLoad={() => setAddOpen(true)}
+            compactDriverGroups={compactDriverGroups}
+            filterDriverId={filters.driverId || undefined}
             emptyMessage={{
               title: t("loads.noLoads"),
               subtitle:
@@ -851,7 +1039,7 @@ export default function LoadsList() {
             {activeFilters > 0 && (
               <button
                 className="text-accent hover:underline"
-                onClick={() => setFilters({ status: "", driverId: "", brokerId: "" })}
+                onClick={() => setFilters({ status: "", driverId: "", dispatcherId: "" })}
               >
                 {t("loads.clearFilters")}
               </button>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useListDrivers, useDeleteDriver } from "@workspace/api-client-react";
+import { useListDrivers, useDeleteDriver, useGetMe } from "@workspace/api-client-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -147,6 +147,8 @@ const TYPE_DISPLAY_KEYS: Record<string, string> = {
 
 export default function DriversList() {
   const { t } = useI18n();
+  const { data: me } = useGetMe({});
+  const isAdmin = me?.role === "admin";
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [addOpen, setAddOpen] = useState(false);
@@ -332,15 +334,17 @@ export default function DriversList() {
                         >
                           <Pencil className="h-3.5 w-3.5 mr-1" /> {t("common.edit")}
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                          onClick={() => setDeleteTarget({ id: driver.id, fullName: driver.fullName })}
-                          disabled={deleteMutation.isPending}
-                        >
-                          <Trash2 className="h-3.5 w-3.5 mr-1" /> {t("drivers.delete")}
-                        </Button>
+                        {isAdmin && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                            onClick={() => setDeleteTarget({ id: driver.id, fullName: driver.fullName })}
+                            disabled={deleteMutation.isPending}
+                          >
+                            <Trash2 className="h-3.5 w-3.5 mr-1" /> {t("drivers.delete")}
+                          </Button>
+                        )}
                       </div>
                     </td>
                   </tr>

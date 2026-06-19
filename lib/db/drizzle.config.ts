@@ -11,6 +11,7 @@ export default defineConfig({
     "./src/schema/brokers.ts",
     "./src/schema/loads.ts",
     "./src/schema/notifications.ts",
+    "./src/schema/board-weeks.ts",
   ],
   dialect: "postgresql",
   dbCredentials: {

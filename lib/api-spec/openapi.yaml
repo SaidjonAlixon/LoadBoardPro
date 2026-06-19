@@ -232,7 +232,7 @@ paths:
     delete:
       operationId: deleteDriver
       tags: [drivers]
-      summary: Archive a driver (soft delete)
+      summary: Permanently remove a driver from lists (past-week loads are preserved)
       parameters:
         - name: id
           in: path

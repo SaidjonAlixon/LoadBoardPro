@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { LoadStatus } from "@workspace/api-client-react";
-import { useI18n, translateLoadStatus, translateLoadStatusDesc } from "@/lib/i18n";
+import { useI18n } from "@/lib/i18n";
+import { translateLoadStatus, translateLoadStatusDesc } from "@/lib/i18n/translate";
 import { getLoadStatusClass } from "@/lib/load-status-styles";
 
 export function LoadStatusBadge({ status }: { status: LoadStatus | string }) {

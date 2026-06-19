@@ -1,5 +1,5 @@
 import type { Load } from "@workspace/api-client-react";
-import { translateLoadStatus } from "@/lib/i18n";
+import { translateLoadStatus } from "@/lib/i18n/translate";
 import { toCityState } from "@/components/sheet-editable-cell";
 
 const HDR_FONT = "bold 10px Inter, sans-serif";

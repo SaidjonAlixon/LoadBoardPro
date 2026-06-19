@@ -1,7 +1,8 @@
 import React, { useState, useRef, useCallback } from "react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
-import { useI18n, translateRole } from "@/lib/i18n";
+import { useI18n } from "@/lib/i18n";
+import { translateRole } from "@/lib/i18n/translate";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {

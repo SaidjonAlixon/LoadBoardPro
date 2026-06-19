@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useI18n } from "@/lib/i18n";
+import { formatWeekRangeLabel, getThisWeekStart, normalizeWeekStart } from "@/lib/date-range";
 
 function DriverStatusCard({
   total,
@@ -263,17 +264,14 @@ export default function WeeklyView() {
   const { data: weeks, isLoading: weeksLoading } = useListWeeks({});
   const [selectedWeek, setSelectedWeek] = useState<string | null>(null);
 
-  const activeWeek = selectedWeek ?? (weeks?.[0]?.weekStart ?? null);
-  const { data: weekData, isLoading: weekLoading } = useGetWeeklyView(activeWeek ?? "", {
+  const activeWeek = normalizeWeekStart(selectedWeek ?? weeks?.[0]?.weekStart ?? getThisWeekStart());
+
+  const formatWeekLabel = (weekStart: string) =>
+    formatWeekRangeLabel(weekStart, formatDate);
+
+  const { data: weekData, isLoading: weekLoading } = useGetWeeklyView(activeWeek, {
     query: { enabled: !!activeWeek } as any,
   });
-
-  const formatWeekLabel = (weekStart: string) => {
-    const start = new Date(weekStart);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 6);
-    return `${formatDate(start)} – ${formatDate(end)}`;
-  };
 
   const kpi = weekData?.kpi;
   const driverStatus = weekData?.driverStatus;
@@ -301,7 +299,7 @@ export default function WeeklyView() {
           {weeksLoading ? (
             <Skeleton className="h-10 w-full rounded-md" />
           ) : (
-            <Select value={activeWeek ?? ""} onValueChange={setSelectedWeek}>
+            <Select value={activeWeek} onValueChange={(v) => setSelectedWeek(normalizeWeekStart(v))}>
               <SelectTrigger className="border-border bg-card shadow-sm">
                 <SelectValue placeholder={t("weekly.selectWeek")} />
               </SelectTrigger>

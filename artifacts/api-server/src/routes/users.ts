@@ -40,8 +40,8 @@ router.patch("/me", requireAuth, async (req: AuthRequest, res) => {
   res.json(serializeUser(updated));
 });
 
-// GET /api/users/dispatchers (admin + accounting)
-router.get("/dispatchers", requireAuth, requireRole("admin", "accounting"), async (_req, res) => {
+// GET /api/users/dispatchers (all authenticated — for loads board filter)
+router.get("/dispatchers", requireAuth, async (_req, res) => {
   const users = await db
     .select()
     .from(usersTable)

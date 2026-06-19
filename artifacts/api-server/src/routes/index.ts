@@ -6,6 +6,7 @@ import brokersRouter from "./brokers";
 import loadsRouter from "./loads";
 import analyticsRouter from "./analytics";
 import weeklyRouter from "./weekly";
+import boardWeeksRouter from "./board-weeks";
 import notificationsRouter from "./notifications";
 import accountingRouter from "./accounting";
 
@@ -18,6 +19,7 @@ router.use("/brokers", brokersRouter);
 router.use("/loads", loadsRouter);
 router.use("/analytics", analyticsRouter);
 router.use("/weekly", weeklyRouter);
+router.use("/board-weeks", boardWeeksRouter);
 router.use("/notifications", notificationsRouter);
 router.use("/accounting", accountingRouter);
 

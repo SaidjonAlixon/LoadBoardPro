@@ -2,10 +2,18 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import type { Broker, Driver, Load, LoadStatus, LoadUpdate } from "@workspace/api-client-react";
 import { useCreateLoad, useDeleteLoad, updateLoad } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { LoadsWeekToolbar, type BoardWeek } from "@/components/loads-week-toolbar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { Plus, Eye, Trash2, Columns2, RotateCcw, GripVertical } from "lucide-react";
-import { useI18n, translateLoadStatus, translateLoadStatusDesc } from "@/lib/i18n";
+import { Plus, Eye, Trash2, Columns2, GripVertical } from "lucide-react";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import { useI18n } from "@/lib/i18n";
+import { translateLoadStatus, translateLoadStatusDesc } from "@/lib/i18n/translate";
 import { getStatusOptionsForRole, isLoadDispatcherLocked } from "@/lib/load-statuses";
 import { getSheetStatusClass } from "@/lib/load-status-styles";
 import {
@@ -14,7 +22,7 @@ import {
   SHEET_CELL_CLIP,
   isoToSheetDate,
   parseCityState,
-  toCityState,
+  formatLocationForEdit,
 } from "@/components/sheet-editable-cell";
 import {
   computeAutoFitWidths,
@@ -23,6 +31,20 @@ import {
   scaleWidthsToContainer,
 } from "@/components/sheet-column-widths";
 import { resolveBrokerIdByName } from "@/lib/resolve-broker";
+import { getMondayOfWeek, getThisWeekStart, normalizeWeekStart, toIsoDateLocal, weekEndFromStart } from "@/lib/date-range";
+import {
+  DISPATCHER_REQUIRED_FIELD_LABEL_KEYS,
+  getActiveDraftLoadId,
+  getDispatcherFieldValidation,
+  getPrimaryPatchField,
+  isDispatcherLoadComplete,
+  isDraftLoadNumber,
+  isPlaceholderCity,
+  markDraftFieldTouched,
+  shouldValidateDispatcherPatch,
+  validateDispatcherPatchValue,
+  type SheetValidationField,
+} from "@/lib/validate-dispatcher-load";
 import { toast } from "sonner";
 
 const COL_COUNT_BASE = 17; // #, type..status + eye toggle
@@ -89,13 +111,52 @@ const TOTAL_LABEL_CELL =
 const READONLY_CELL = `${CELL} text-muted-foreground bg-sheet-readonly`;
 const ROW_NUM_CELL = `${CELL} text-muted-foreground bg-sheet-readonly font-medium tabular-nums`;
 
-function canEditField(role: string, field: string, load?: Load): boolean {
-  if (load && role === "dispatcher" && isLoadDispatcherLocked(load.status)) return false;
+function canEditField(
+  role: string,
+  field: string,
+  load?: Load,
+  activeDraftLoadId?: string | null,
+  currentUserId?: string | null,
+): boolean {
+  if (load && activeDraftLoadId && load.id !== activeDraftLoadId) return false;
+  if (load && role === "dispatcher") {
+    if (!currentUserId || load.dispatcherId !== currentUserId) return false;
+    if (isLoadDispatcherLocked(load.status)) return false;
+  }
   if (["rpm", "irDiff", "biDiff", "type", "driver", "dispatcher"].includes(field)) return false;
   if (role === "accounting") return ACCOUNTING_FIELDS.has(field);
   if (role === "dispatcher") return DISPATCHER_FIELDS.has(field);
   if (role === "admin") return ACCOUNTING_FIELDS.has(field) || DISPATCHER_FIELDS.has(field) || field === "driverId";
   return false;
+}
+
+function canDeleteLoadRow(
+  role: string,
+  load: Load,
+  currentUserId?: string | null,
+): boolean {
+  if (isLoadDispatcherLocked(load.status)) return false;
+  if (role === "admin") return true;
+  if (role === "dispatcher") {
+    return !!currentUserId && load.dispatcherId === currentUserId;
+  }
+  return false;
+}
+
+function ownsLoad(role: string, load: Load, currentUserId?: string | null): boolean {
+  if (role === "admin") return true;
+  if (role === "dispatcher") return !!currentUserId && load.dispatcherId === currentUserId;
+  return false;
+}
+
+function cellValidation(
+  load: Load,
+  field: SheetValidationField,
+  activeDraftLoadId: string | null,
+  touched?: Set<string>,
+): "valid" | "invalid" | "neutral" {
+  if (!activeDraftLoadId || load.id !== activeDraftLoadId) return "neutral";
+  return getDispatcherFieldValidation(load, field, touched);
 }
 
 function formatSheetDate(date: string): string {
@@ -109,18 +170,13 @@ function driverTypeShort(type?: string): string {
   return "—";
 }
 
-function getMondayOfWeek(dateStr: string): string {
-  if (!dateStr) return "";
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return "";
-  const day = d.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
-  return d.toISOString().split("T")[0];
+function isNewLoad(load: Load): boolean {
+  return isDraftLoadNumber(load.loadNumber);
 }
 
-function isNewLoad(load: Load): boolean {
-  return load.loadNumber.startsWith("NEW-");
+function loadsInWeek(loads: Load[], weekStart: string): Load[] {
+  const mon = normalizeWeekStart(weekStart);
+  return loads.filter((l) => normalizeWeekStart(l.weekStart || l.puDate) === mon);
 }
 
 function sortLoadsByOrder(loads: Load[]): Load[] {
@@ -160,20 +216,36 @@ function sortDriverGroups(
   });
 }
 
-function groupLoadsByDriver(loads: Load[], drivers: Driver[]) {
+function groupLoadsByDriver(
+  loads: Load[],
+  drivers: Driver[],
+  options?: { compactGroups?: boolean; filterDriverId?: string },
+) {
   const map = new Map<string, { driver: Load["driver"]; driverId: string | null; loads: Load[] }>();
   for (const load of loads) {
     const key = load.driverId ?? "__unassigned__";
     if (!map.has(key)) {
-      map.set(key, { driver: load.driver ?? null, driverId: load.driverId ?? null, loads: [] });
+      map.set(key, { driver: load.driver ?? undefined, driverId: load.driverId ?? null, loads: [] });
     }
     map.get(key)!.loads.push(load);
   }
-  const activeDrivers = [...drivers.filter((x) => x.isActive)].sort(
-    (a, b) => driverCreatedTime(a) - driverCreatedTime(b),
-  );
-  for (const d of activeDrivers) {
-    if (!map.has(d.id)) {
+
+  if (!options?.compactGroups) {
+    const activeDrivers = [...drivers.filter((x) => x.isActive)].sort(
+      (a, b) => driverCreatedTime(a) - driverCreatedTime(b),
+    );
+    for (const d of activeDrivers) {
+      if (!map.has(d.id)) {
+        map.set(d.id, {
+          driver: d,
+          driverId: d.id,
+          loads: [],
+        });
+      }
+    }
+  } else if (options.filterDriverId) {
+    const d = drivers.find((x) => x.id === options.filterDriverId);
+    if (d && !map.has(d.id)) {
       map.set(d.id, {
         driver: d,
         driverId: d.id,
@@ -181,6 +253,7 @@ function groupLoadsByDriver(loads: Load[], drivers: Driver[]) {
       });
     }
   }
+
   return sortDriverGroups(
     Array.from(map.values()).map((group) => ({
       ...group,
@@ -236,24 +309,78 @@ interface LoadsSpreadsheetProps {
   loads: Load[];
   isLoading: boolean;
   userRole: string;
+  currentUserId?: string | null;
   brokers?: Broker[];
   drivers?: Driver[];
+  weekStart?: string;
+  boardWeeks?: BoardWeek[];
+  onWeekChange?: (weekStart: string) => void;
+  onCreateWeek?: () => void;
+  creatingWeek?: boolean;
   onAddLoad?: () => void;
   emptyMessage?: { title: string; subtitle: string; showAdd?: boolean };
+  /** When filters/search are active, hide empty driver rows except the selected driver. */
+  compactDriverGroups?: boolean;
+  filterDriverId?: string;
 }
 
 export function LoadsSpreadsheet({
   loads,
   isLoading,
   userRole,
+  currentUserId = null,
   brokers = [],
   drivers = [],
+  weekStart: weekStartProp,
+  boardWeeks = [],
+  onWeekChange,
+  onCreateWeek,
+  creatingWeek = false,
   onAddLoad,
   emptyMessage,
+  compactDriverGroups = false,
+  filterDriverId,
 }: LoadsSpreadsheetProps) {
-  const { t, formatCurrency, formatNumber } = useI18n();
+  const weekStart = weekStartProp ?? getThisWeekStart();
+  const { t, formatCurrency, formatNumber, formatDate } = useI18n();
   const qc = useQueryClient();
-  const groups = groupLoadsByDriver(loads, drivers);
+  const hiddenStorageKey = `lb_hidden_drivers_${weekStart}`;
+
+  const readHiddenDrivers = useCallback((key: string) => {
+    try {
+      const raw = sessionStorage.getItem(key);
+      return new Set<string>(raw ? (JSON.parse(raw) as string[]) : []);
+    } catch {
+      return new Set<string>();
+    }
+  }, []);
+
+  const [hiddenDriverIds, setHiddenDriverIds] = useState<Set<string>>(() =>
+    readHiddenDrivers(`lb_hidden_drivers_${weekStartProp ?? getThisWeekStart()}`),
+  );
+
+  useEffect(() => {
+    setHiddenDriverIds(readHiddenDrivers(hiddenStorageKey));
+  }, [hiddenStorageKey, readHiddenDrivers]);
+
+  const persistHiddenDrivers = useCallback(
+    (ids: Set<string>) => {
+      try {
+        sessionStorage.setItem(hiddenStorageKey, JSON.stringify([...ids]));
+      } catch {
+        /* ignore */
+      }
+    },
+    [hiddenStorageKey],
+  );
+  const groups = useMemo(
+    () =>
+      groupLoadsByDriver(loads, drivers, {
+        compactGroups: compactDriverGroups,
+        filterDriverId,
+      }).filter((g) => !g.driverId || !hiddenDriverIds.has(g.driverId)),
+    [loads, drivers, hiddenDriverIds, compactDriverGroups, filterDriverId],
+  );
   const rowNumberByLoadId = useMemo(() => {
     const map = new Map<string, number>();
     let n = 0;
@@ -266,14 +393,19 @@ export function LoadsSpreadsheet({
     return map;
   }, [groups]);
   const canAddLoad = userRole === "dispatcher" || userRole === "admin";
-  const canDeleteLoad = userRole === "dispatcher" || userRole === "admin";
   const canReorder = canAddLoad;
+  const [draftTouchedFields, setDraftTouchedFields] = useState<Map<string, Set<string>>>(new Map());
+  const activeDraftLoadId = useMemo(
+    () => getActiveDraftLoadId(loads, draftTouchedFields),
+    [loads, draftTouchedFields],
+  );
+  const canReorderRows = canReorder && !activeDraftLoadId;
   const [draggingLoadId, setDraggingLoadId] = useState<string | null>(null);
   const [dragDriverId, setDragDriverId] = useState<string | null | undefined>(undefined);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const canToggleFinancial = userRole !== "accounting";
   const canToggleRouteDetails = userRole === "accounting";
-  const showActionColumn = canDeleteLoad;
+  const showActionColumn = userRole === "dispatcher" || userRole === "admin";
   const [showFinancial, setShowFinancial] = useState(userRole === "accounting");
   const [showRouteDetails, setShowRouteDetails] = useState(userRole !== "accounting");
   const [focusCell, setFocusCell] = useState<{ loadId: string; field: string } | null>(null);
@@ -336,7 +468,7 @@ export function LoadsSpreadsheet({
   }, [canToggleRouteDetails]);
 
   const saveChains = useRef(new Map<string, Promise<void>>());
-  const invalidateTimer = useRef<ReturnType<typeof setTimeout>>();
+  const invalidateTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const scheduleLoadsRefresh = useCallback(() => {
     clearTimeout(invalidateTimer.current);
@@ -373,8 +505,34 @@ export function LoadsSpreadsheet({
 
   const patchLoad = useCallback(
     async (id: string, data: LoadUpdate) => {
+      const load = loads.find((l) => l.id === id);
+      if (!load) return;
+      if (!ownsLoad(userRole, load, currentUserId)) return;
+
+      const field = getPrimaryPatchField(data);
+      const merged = { ...load, ...data } as Load;
+      const touched = draftTouchedFields.get(id);
+
+      if (field && shouldValidateDispatcherPatch(userRole, data)) {
+        const incomplete = !isDispatcherLoadComplete(load, touched);
+        if (incomplete) {
+          const invalid = validateDispatcherPatchValue(field, data, merged, touched);
+          if (invalid) {
+            toast.error(
+              t("loads.validation.fieldRequired", {
+                field: t(DISPATCHER_REQUIRED_FIELD_LABEL_KEYS[invalid]),
+              }),
+            );
+            throw new Error("validation");
+          }
+        }
+      }
+
       const run = async () => {
         await updateLoad(id, data);
+        if (field) {
+          setDraftTouchedFields((prev) => markDraftFieldTouched(prev, id, field));
+        }
         scheduleLoadsRefresh();
         setFocusCell(null);
       };
@@ -382,9 +540,11 @@ export function LoadsSpreadsheet({
       const prev = saveChains.current.get(id) ?? Promise.resolve();
       const next = prev
         .then(run)
-        .catch(() => {
-          toast.error(t("loads.sheet.saveFailed"));
-          throw new Error("save failed");
+        .catch((err) => {
+          if (err?.message !== "validation") {
+            toast.error(t("loads.sheet.saveFailed"));
+          }
+          throw err;
         });
 
       saveChains.current.set(
@@ -394,20 +554,26 @@ export function LoadsSpreadsheet({
 
       await next;
     },
-    [scheduleLoadsRefresh, t],
+    [draftTouchedFields, loads, scheduleLoadsRefresh, t, userRole, currentUserId],
   );
 
   const addRowForDriver = useCallback(
     async (driverId: string | null) => {
-      const today = new Date().toISOString().split("T")[0];
+      if (activeDraftLoadId) {
+        toast.error(t("loads.validation.finishDraftFirst"));
+        return;
+      }
+      const today = toIsoDateLocal(new Date());
+      const weekEnd = weekEndFromStart(weekStart);
+      const defaultDate = today >= weekStart && today <= weekEnd ? today : weekStart;
       const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
       try {
         const created = await createMutation.mutateAsync({
           data: {
             loadNumber: `NEW-${suffix}`,
             driverId,
-            puDate: today,
-            delDate: today,
+            puDate: defaultDate,
+            delDate: defaultDate,
             originCity: "-",
             originState: "AK",
             destCity: "-",
@@ -416,15 +582,65 @@ export function LoadsSpreadsheet({
             rate: 0,
             status: "Booked",
             reimbursement: 0,
-            weekStart: getMondayOfWeek(today),
+            weekStart,
           },
         });
         setFocusCell({ loadId: created.id, field: "loadNumber" });
+        if (driverId) {
+          setHiddenDriverIds((prev) => {
+            if (!prev.has(driverId)) return prev;
+            const next = new Set(prev);
+            next.delete(driverId);
+            persistHiddenDrivers(next);
+            return next;
+          });
+        }
       } catch {
         toast.error(t("loads.createFailed"));
       }
     },
-    [createMutation, t],
+    [activeDraftLoadId, createMutation, t, weekStart, persistHiddenDrivers],
+  );
+
+  const deleteDriverWeek = useCallback(
+    async (driverId: string, driverName: string, weekLoads: Load[]) => {
+      const confirmMsg = weekLoads.length
+        ? t("loads.sheet.deleteGroupConfirm", {
+            driver: driverName,
+            count: weekLoads.length,
+          })
+        : t("loads.sheet.deleteDriverEmptyConfirm", { driver: driverName });
+      if (!window.confirm(confirmMsg)) return;
+
+      if (!weekLoads.length) {
+        setHiddenDriverIds((prev) => {
+          const next = new Set([...prev, driverId]);
+          persistHiddenDrivers(next);
+          return next;
+        });
+        toast.success(t("loads.sheet.deleteGroupSuccess"));
+        return;
+      }
+
+      try {
+        const res = await fetch(
+          `/api/drivers/${driverId}/week-loads?weekStart=${encodeURIComponent(weekStart)}`,
+          { method: "DELETE", credentials: "include" },
+        );
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error((err as { error?: string }).error || "delete failed");
+        }
+        void qc.invalidateQueries({ queryKey: ["/api/loads"] });
+        void qc.invalidateQueries({ queryKey: ["/api/analytics"] });
+        void qc.invalidateQueries({ queryKey: ["/api/weekly"] });
+        toast.success(t("loads.sheet.deleteGroupSuccess"));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "";
+        toast.error(msg || t("loads.sheet.deleteGroupFailed"));
+      }
+    },
+    [qc, t, weekStart, persistHiddenDrivers],
   );
 
   const deleteLoad = useCallback(
@@ -475,10 +691,6 @@ export function LoadsSpreadsheet({
       computeAutoFitWidths(loads, wide, showFinancial, t, formatCurrency, formatNumber),
     );
   }, [loads, wide, showFinancial, t, formatCurrency, formatNumber]);
-
-  const handleResetWidths = useCallback(() => {
-    setColumnWidths(null);
-  }, []);
 
   const reorderLoads = useCallback(
     async (driverId: string | null, loadIds: string[]) => {
@@ -568,7 +780,7 @@ export function LoadsSpreadsheet({
     if (!showFinancial) return null;
     return (
       <>
-        {canEditField(userRole, "invoicedAmount", load) ? (
+        {canEditField(userRole, "invoicedAmount", load, activeDraftLoadId, currentUserId) ? (
           <SheetEditableCell
             editable
             value={String(load.invoicedAmount ?? "")}
@@ -594,7 +806,7 @@ export function LoadsSpreadsheet({
           formatCurrency={formatCurrency}
           highlightNegative
         />
-        {canEditField(userRole, "brokerPaid", load) ? (
+        {canEditField(userRole, "brokerPaid", load, activeDraftLoadId, currentUserId) ? (
           <SheetEditableCell
             editable
             value={String(load.brokerPaid ?? "")}
@@ -736,7 +948,22 @@ export function LoadsSpreadsheet({
 
   return (
     <div className="flex flex-col min-h-0 h-full">
-      <div className="flex items-center justify-end gap-2 px-2 py-1.5 border-b border-border bg-muted/30 shrink-0">
+      <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b border-border bg-muted/30 shrink-0">
+        {onWeekChange && onCreateWeek ? (
+          <LoadsWeekToolbar
+            weekStart={weekStart}
+            weeks={boardWeeks}
+            onWeekChange={onWeekChange}
+            onCreateWeek={onCreateWeek}
+            creatingWeek={creatingWeek}
+            formatDate={formatDate}
+            t={t}
+            canManageWeeks={userRole === "admin" || userRole === "dispatcher"}
+          />
+        ) : (
+          <div />
+        )}
+        <div className="flex items-center gap-2">
         {(canToggleRouteDetails || canToggleFinancial) && (
           <Button
             type="button"
@@ -774,18 +1001,7 @@ export function LoadsSpreadsheet({
           <Columns2 className="h-3.5 w-3.5 mr-1.5" />
           {t("loads.sheet.autoFit")}
         </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-8 text-xs border-border"
-          onClick={handleResetWidths}
-          disabled={columnWidths === null}
-          data-testid="sheet-reset-widths"
-        >
-          <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
-          {t("loads.sheet.resetWidths")}
-        </Button>
+        </div>
       </div>
       <div ref={containerRef} className="flex-1 min-h-0 w-full overflow-auto">
       <table
@@ -861,20 +1077,26 @@ export function LoadsSpreadsheet({
           </tr>
         ) : (
           groups.map((group, gi) => {
-            const rowCount = group.loads.length;
+            const weekLoads = loadsInWeek(group.loads, weekStart);
+            const rowCount = weekLoads.length;
             const dataRows = Math.max(rowCount, 1);
             const rowSpan = dataRows;
-            const totalMileage = sumField(group.loads, "mileage");
-            const totalRate = sumField(group.loads, "rate");
-            const totalReimb = sumField(group.loads, "reimbursement");
-            const totalInvoiced = group.loads.reduce((a, l) => a + (l.invoicedAmount ?? 0), 0);
-            const totalPaid = group.loads.reduce((a, l) => a + (l.brokerPaid ?? 0), 0);
+            const totalMileage = sumField(weekLoads, "mileage");
+            const totalRate = sumField(weekLoads, "rate");
+            const totalReimb = sumField(weekLoads, "reimbursement");
+            const totalInvoiced = weekLoads.reduce((a, l) => a + (l.invoicedAmount ?? 0), 0);
+            const totalPaid = weekLoads.reduce((a, l) => a + (l.brokerPaid ?? 0), 0);
             const totalIr = totalInvoiced - (totalRate + totalReimb);
             const totalBi = totalPaid - totalInvoiced;
             const avgRpm = totalMileage > 0 ? totalRate / totalMileage : null;
-            const hasFinancialTotals = group.loads.some(
+            const hasFinancialTotals = weekLoads.some(
               (l) => l.invoicedAmount != null || l.brokerPaid != null,
             );
+            const ownWeekLoads = weekLoads.filter((l) => ownsLoad(userRole, l, currentUserId));
+            const canManageDriverGroup =
+              userRole === "admin"
+              || weekLoads.length === 0
+              || ownWeekLoads.length > 0;
 
             const driverCell = (
               <>
@@ -886,27 +1108,60 @@ export function LoadsSpreadsheet({
                   {driverTypeShort(group.driver?.driverType)}
                 </td>
                 <td rowSpan={rowSpan} className={groupCls} title={group.driver?.fullName ?? t("loads.sheet.unassigned")}>
-                  <div className="flex items-center justify-center gap-1 min-w-0">
-                    <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-center">
-                      {group.driver?.fullName ?? t("loads.sheet.unassigned")}
-                    </span>
-                    <div className="flex flex-col gap-1 shrink-0">
-                      {canAddLoad && (
-                        <button
-                          type="button"
-                          title={t("loads.sheet.addRow")}
-                          className="w-5 h-5 flex items-center justify-center bg-accent text-accent-foreground hover:bg-accent/90 text-sm font-bold leading-none"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void addRowForDriver(group.driverId);
-                          }}
-                          data-testid={`add-load-row-${group.driverId ?? "unassigned"}`}
+                  <ContextMenu>
+                    <ContextMenuTrigger
+                      asChild
+                      disabled={!group.driverId || !canManageDriverGroup || !!activeDraftLoadId}
+                    >
+                      <div className="flex items-center justify-center gap-1 min-w-0 min-h-[22px] cursor-context-menu">
+                        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-center">
+                          {group.driver?.fullName ?? t("loads.sheet.unassigned")}
+                        </span>
+                        <div className="flex flex-col gap-1 shrink-0">
+                          {canAddLoad && (
+                            <button
+                              type="button"
+                              title={
+                                activeDraftLoadId
+                                  ? t("loads.validation.finishDraftFirst")
+                                  : t("loads.sheet.addRow")
+                              }
+                              disabled={!!activeDraftLoadId}
+                              className={`w-5 h-5 flex items-center justify-center text-sm font-bold leading-none ${
+                                activeDraftLoadId
+                                  ? "bg-muted text-muted-foreground cursor-not-allowed opacity-50"
+                                  : "bg-accent text-accent-foreground hover:bg-accent/90"
+                              }`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void addRowForDriver(group.driverId);
+                              }}
+                              data-testid={`add-load-row-${group.driverId ?? "unassigned"}`}
+                            >
+                              +
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </ContextMenuTrigger>
+                    {group.driverId && canManageDriverGroup && (
+                      <ContextMenuContent className="w-48">
+                        <ContextMenuItem
+                          className="text-red-600 focus:text-red-600 focus:bg-red-50"
+                          onClick={() =>
+                            void deleteDriverWeek(
+                              group.driverId!,
+                              group.driver?.fullName ?? t("loads.sheet.unassigned"),
+                              userRole === "admin" ? weekLoads : ownWeekLoads,
+                            )
+                          }
                         >
-                          +
-                        </button>
-                      )}
-                    </div>
-                  </div>
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          {t("loads.sheet.deleteGroup")}
+                        </ContextMenuItem>
+                      </ContextMenuContent>
+                    )}
+                  </ContextMenu>
                 </td>
               </>
             );
@@ -925,17 +1180,23 @@ export function LoadsSpreadsheet({
                     </td>
                   </tr>
                 ) : (
-                  group.loads.map((load, li) => (
+                  weekLoads.map((load, li) => {
+                    const touched = draftTouchedFields.get(load.id);
+                    const isDraftRow = load.id === activeDraftLoadId;
+                    const isLockedRow = !!activeDraftLoadId && !isDraftRow;
+                    return (
                     <tr
                       key={load.id}
                       className={`${li % 2 === 1 ? "sheet-row-alt" : ""} ${
                         isLoadDispatcherLocked(load.status) ? "sheet-row-locked" : ""
+                      } ${isLockedRow ? "opacity-45" : ""} ${
+                        isDraftRow ? "ring-2 ring-inset ring-accent/40" : ""
                       } ${
                         dropTargetId === load.id ? "ring-2 ring-inset ring-accent/60" : ""
                       } ${draggingLoadId === load.id ? "opacity-50" : ""}`}
                       data-testid={`row-load-${load.id}`}
                       onDragOver={(e) => {
-                        if (!canReorder || draggingLoadId === null) return;
+                        if (!canReorderRows || draggingLoadId === null) return;
                         if (dragDriverId !== group.driverId) return;
                         e.preventDefault();
                         setDropTargetId(load.id);
@@ -945,12 +1206,12 @@ export function LoadsSpreadsheet({
                       }}
                       onDrop={(e) => {
                         e.preventDefault();
-                        handleRowDrop(load.id, group.driverId, group.loads);
+                        handleRowDrop(load.id, group.driverId, weekLoads);
                       }}
                     >
                       <td className={ROW_NUM_CELL}>
                         <div className="flex items-center justify-center gap-0.5">
-                          {canReorder && !isLoadDispatcherLocked(load.status) && (
+                          {canReorderRows && ownsLoad(userRole, load, currentUserId) && !isLoadDispatcherLocked(load.status) && (
                             <span
                               draggable
                               title={t("loads.sheet.dragRow")}
@@ -975,24 +1236,26 @@ export function LoadsSpreadsheet({
                       </td>
                       {li === 0 && driverCell}
                       <SheetEditableCell
-                        editable={canEditField(userRole, "brokerId", load)}
+                        editable={canEditField(userRole, "brokerId", load, activeDraftLoadId, currentUserId)}
                         value={load.broker?.name ?? ""}
                         display={load.broker?.name ?? t("common.emDash")}
                         tooltip={load.broker?.name ?? undefined}
                         className={wide ? "px-2.5 py-1.5" : ""}
+                        validationState={cellValidation(load, "broker", activeDraftLoadId, touched)}
                         onSave={async (v) => saveBrokerForLoad(load.id, v)}
                       />
                       <SheetEditableCell
-                        editable={canEditField(userRole, "loadNumber", load)}
-                        value={isNewLoad(load) ? "" : load.loadNumber}
-                        tooltip={isNewLoad(load) ? undefined : load.loadNumber}
+                        editable={canEditField(userRole, "loadNumber", load, activeDraftLoadId, currentUserId)}
+                        value={isDraftLoadNumber(load.loadNumber) ? "" : load.loadNumber}
+                        tooltip={isDraftLoadNumber(load.loadNumber) ? undefined : load.loadNumber}
                         display={
-                          isNewLoad(load) ? (
+                          isDraftLoadNumber(load.loadNumber) ? (
                             <span className="text-muted-foreground">{t("common.emDash")}</span>
                           ) : (
                             <span className="font-bold text-sheet-load-id">{load.loadNumber}</span>
                           )
                         }
+                        validationState={cellValidation(load, "loadNumber", activeDraftLoadId, touched)}
                         autoEdit={
                           focusCell?.loadId === load.id && focusCell.field === "loadNumber"
                         }
@@ -1008,73 +1271,77 @@ export function LoadsSpreadsheet({
                       {showRouteDetails && (
                         <>
                           <SheetEditableCell
-                            editable={canEditField(userRole, "puDate", load)}
+                            editable={canEditField(userRole, "puDate", load, activeDraftLoadId, currentUserId)}
                             value={load.puDate.split("T")[0]}
                             display={formatSheetDate(load.puDate)}
                             inputType="date"
+                            validationState={cellValidation(load, "puDate", activeDraftLoadId, touched)}
                             onSave={async (v) => patchLoad(load.id, { puDate: v })}
                           />
                           <SheetEditableCell
-                            editable={canEditField(userRole, "originCity", load)}
-                            value={
-                              load.originCity === "-"
-                                ? ""
-                                : toCityState(load.originCity, load.originState)
-                            }
+                            editable={canEditField(userRole, "originCity", load, activeDraftLoadId, currentUserId)}
+                            value={formatLocationForEdit(load.originCity, load.originState)}
                             tooltip={
-                              load.originCity === "-"
+                              isPlaceholderCity(load.originCity)
                                 ? undefined
-                                : toCityState(load.originCity, load.originState)
+                                : formatLocationForEdit(load.originCity, load.originState)
                             }
                             display={
-                              load.originCity === "-"
+                              isPlaceholderCity(load.originCity)
                                 ? t("common.emDash")
-                                : toCityState(load.originCity, load.originState)
+                                : formatLocationForEdit(load.originCity, load.originState)
                             }
+                            validationState={cellValidation(load, "origin", activeDraftLoadId, touched)}
                             onSave={async (v) => {
                               const { city, state } = parseCityState(v);
+                              if (!city.trim()) {
+                                toast.error(t("loads.validation.originRequired"));
+                                throw new Error("validation");
+                              }
                               await patchLoad(load.id, {
-                                originCity: city || "-",
-                                originState: state || "AK",
+                                originCity: city.trim(),
+                                originState: state.trim() || "-",
                               });
                             }}
                           />
                           <SheetEditableCell
-                            editable={canEditField(userRole, "delDate", load)}
+                            editable={canEditField(userRole, "delDate", load, activeDraftLoadId, currentUserId)}
                             value={load.delDate.split("T")[0]}
                             display={formatSheetDate(load.delDate)}
                             inputType="date"
+                            validationState={cellValidation(load, "delDate", activeDraftLoadId, touched)}
                             onSave={async (v) => patchLoad(load.id, { delDate: v })}
                           />
                           <SheetEditableCell
-                            editable={canEditField(userRole, "destCity", load)}
-                            value={
-                              load.destCity === "-"
-                                ? ""
-                                : toCityState(load.destCity, load.destState)
-                            }
+                            editable={canEditField(userRole, "destCity", load, activeDraftLoadId, currentUserId)}
+                            value={formatLocationForEdit(load.destCity, load.destState)}
                             tooltip={
-                              load.destCity === "-"
+                              isPlaceholderCity(load.destCity)
                                 ? undefined
-                                : toCityState(load.destCity, load.destState)
+                                : formatLocationForEdit(load.destCity, load.destState)
                             }
                             display={
-                              load.destCity === "-"
+                              isPlaceholderCity(load.destCity)
                                 ? t("common.emDash")
-                                : toCityState(load.destCity, load.destState)
+                                : formatLocationForEdit(load.destCity, load.destState)
                             }
+                            validationState={cellValidation(load, "dest", activeDraftLoadId, touched)}
                             onSave={async (v) => {
                               const { city, state } = parseCityState(v);
+                              if (!city.trim()) {
+                                toast.error(t("loads.validation.destinationRequired"));
+                                throw new Error("validation");
+                              }
                               await patchLoad(load.id, {
-                                destCity: city || "-",
-                                destState: state || "AK",
+                                destCity: city.trim(),
+                                destState: state.trim() || "-",
                               });
                             }}
                           />
                         </>
                       )}
                       <SheetEditableCell
-                        editable={canEditField(userRole, "mileage", load)}
+                        editable={canEditField(userRole, "mileage", load, activeDraftLoadId, currentUserId)}
                         value={
                           isNewLoad(load) && load.mileage === 0 ? "" : String(load.mileage ?? 0)
                         }
@@ -1084,7 +1351,16 @@ export function LoadsSpreadsheet({
                             : formatNumber(load.mileage ?? 0)
                         }
                         inputType="number"
-                        onSave={async (v) => patchLoad(load.id, { mileage: Number(v) || 0 })}
+                        validationState={cellValidation(load, "mileage", activeDraftLoadId, touched)}
+                        onSave={async (v) => {
+                          if (!v.trim()) return;
+                          const mileage = Number(v);
+                          if (!Number.isFinite(mileage) || mileage <= 0) {
+                            toast.error(t("loads.validation.mileageRequired"));
+                            throw new Error("validation");
+                          }
+                          await patchLoad(load.id, { mileage });
+                        }}
                       />
                       <td
                         className={readonlyCls}
@@ -1101,7 +1377,7 @@ export function LoadsSpreadsheet({
                         </SheetCellText>
                       </td>
                       <SheetEditableCell
-                        editable={canEditField(userRole, "rate", load)}
+                        editable={canEditField(userRole, "rate", load, activeDraftLoadId, currentUserId)}
                         value={isNewLoad(load) && load.rate === 0 ? "" : String(load.rate ?? 0)}
                         display={
                           isNewLoad(load) && load.rate === 0 ? (
@@ -1116,7 +1392,16 @@ export function LoadsSpreadsheet({
                             : undefined
                         }
                         inputType="number"
-                        onSave={async (v) => patchLoad(load.id, { rate: Number(v) || 0 })}
+                        validationState={cellValidation(load, "rate", activeDraftLoadId, touched)}
+                        onSave={async (v) => {
+                          if (!v.trim()) return;
+                          const rate = Number(v);
+                          if (!Number.isFinite(rate) || rate <= 0) {
+                            toast.error(t("loads.validation.rateRequired"));
+                            throw new Error("validation");
+                          }
+                          await patchLoad(load.id, { rate });
+                        }}
                       />
                       <td className={readonlyCls} title={load.dispatcher?.name ?? undefined}>
                         <SheetCellText>
@@ -1124,14 +1409,16 @@ export function LoadsSpreadsheet({
                         </SheetCellText>
                       </td>
                       <SheetEditableCell
-                        editable={canEditField(userRole, "reimbursement", load)}
+                        editable={canEditField(userRole, "reimbursement", load, activeDraftLoadId, currentUserId)}
                         value={
-                          isNewLoad(load) && (load.reimbursement ?? 0) === 0
+                          isNewLoad(load) && (load.reimbursement ?? 0) === 0 && !touched?.has("reimbursement")
                             ? ""
                             : String(load.reimbursement ?? 0)
                         }
                         display={
-                          load.reimbursement
+                          isNewLoad(load) && (load.reimbursement ?? 0) === 0 && !touched?.has("reimbursement")
+                            ? t("common.emDash")
+                            : load.reimbursement
                             ? formatCurrency(load.reimbursement)
                             : t("common.emDash")
                         }
@@ -1139,22 +1426,36 @@ export function LoadsSpreadsheet({
                           load.reimbursement ? formatCurrency(load.reimbursement) : undefined
                         }
                         inputType="number"
-                        onSave={async (v) => patchLoad(load.id, { reimbursement: Number(v) || 0 })}
+                        validationState={cellValidation(load, "reimbursement", activeDraftLoadId, touched)}
+                        onSave={async (v) => {
+                          if (!v.trim()) {
+                            toast.error(t("loads.validation.reimbursementRequired"));
+                            throw new Error("validation");
+                          }
+                          const reimbursement = Number(v);
+                          if (!Number.isFinite(reimbursement) || reimbursement < 0) {
+                            toast.error(t("loads.validation.reimbursementRequired"));
+                            throw new Error("validation");
+                          }
+                          await patchLoad(load.id, { reimbursement });
+                        }}
                       />
                       <SheetEditableCell
-                        editable={canEditField(userRole, "dispatchNotes", load)}
+                        editable={canEditField(userRole, "dispatchNotes", load, activeDraftLoadId, currentUserId)}
                         value={load.dispatchNotes ?? ""}
                         tooltip={load.dispatchNotes ?? undefined}
                         className={wide ? "max-w-none px-2.5 py-1.5" : "max-w-none"}
+                        validationState={cellValidation(load, "dispatchNotes", activeDraftLoadId, touched)}
                         onSave={async (v) => patchLoad(load.id, { dispatchNotes: v || null })}
                       />
                       <SheetEditableCell
-                        editable={canEditField(userRole, "status", load)}
+                        editable={canEditField(userRole, "status", load, activeDraftLoadId, currentUserId)}
                         value={load.status}
                         tooltip={translateLoadStatusDesc(t, load.status) ?? translateLoadStatus(t, load.status)}
                         display={<SheetStatus status={load.status} />}
                         selectOptions={statusOptions}
                         className={wide ? "px-2.5 py-1.5" : ""}
+                        validationState={cellValidation(load, "status", activeDraftLoadId, touched)}
                         onSave={async (v) =>
                           patchLoad(load.id, { status: v as LoadUpdate["status"] })
                         }
@@ -1163,7 +1464,7 @@ export function LoadsSpreadsheet({
                         <td
                           className={`${cellCls} text-center max-w-none overflow-visible w-9 ${!showFinancial ? "border-r-0" : ""}`}
                         >
-                          {canDeleteLoad && !isLoadDispatcherLocked(load.status) ? (
+                          {canDeleteLoadRow(userRole, load, currentUserId) && !isLockedRow ? (
                             <button
                               type="button"
                               title={t("loads.sheet.deleteRow")}
@@ -1181,7 +1482,8 @@ export function LoadsSpreadsheet({
                       )}
                       {renderFinancialCells(load)}
                     </tr>
-                  ))
+                    );
+                  })
                 )}
                 {renderGroupTotalsRow(
                   totalMileage,

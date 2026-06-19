@@ -459,6 +459,7 @@ driverId?: string;
 dispatcherId?: string;
 brokerId?: string;
 weekStart?: string;
+weekStarts?: string;
 dateFrom?: string;
 dateTo?: string;
 search?: string;
@@ -470,6 +471,7 @@ export type GetKpiParams = {
 dateFrom?: string;
 dateTo?: string;
 weekStart?: string;
+weekStarts?: string;
 dispatcherId?: string;
 driverId?: string;
 };
@@ -478,6 +480,7 @@ export type GetDispatcherRankingParams = {
 dateFrom?: string;
 dateTo?: string;
 weekStart?: string;
+weekStarts?: string;
 dispatcherId?: string;
 };
 
@@ -485,6 +488,7 @@ export type GetStatusBreakdownParams = {
 dateFrom?: string;
 dateTo?: string;
 weekStart?: string;
+weekStarts?: string;
 dispatcherId?: string;
 };
 

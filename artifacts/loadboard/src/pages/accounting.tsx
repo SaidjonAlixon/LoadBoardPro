@@ -13,8 +13,9 @@ import {
   DollarSign, AlertTriangle, TrendingUp, Clock, Check,
   Download, Search, Calendar, X, Eye,
 } from "lucide-react";
-import { useI18n, translateLoadStatus, translateLoadStatusDesc } from "@/lib/i18n";
-import { getDashboardKpiParams, type AccountingDatePreset, type DashboardDateRange } from "@/lib/date-range";
+import { useI18n } from "@/lib/i18n";
+import { translateLoadStatus, translateLoadStatusDesc } from "@/lib/i18n/translate";
+import { getDashboardKpiParams, formatWeekRangeLabel, normalizeWeekStart, type AccountingDatePreset, type DashboardDateRange } from "@/lib/date-range";
 import { exportAccountingExcel, getAccountingExportLabels } from "@/lib/export-accounting-excel";
 import { toast } from "sonner";
 import { ALL_LOAD_STATUSES, getStatusOptionsForRole } from "@/lib/load-statuses";
@@ -168,12 +169,10 @@ export default function Accounting() {
     biDiff: loads.reduce((s, l) => s + (l.biDiff ?? 0), 0),
   }), [loads]);
 
-  const formatWeekLabel = useCallback((w: string) => {
-    const start = new Date(w);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 6);
-    return `${formatDate(start)} – ${formatDate(end)}`;
-  }, [formatDate]);
+  const formatWeekLabel = useCallback(
+    (w: string) => formatWeekRangeLabel(normalizeWeekStart(w), formatDate),
+    [formatDate],
+  );
 
   const activeFilters = (dateFrom || dateTo ? 1 : 0) + (weekFilter !== "all" ? 1 : 0);
 
@@ -206,7 +205,8 @@ export default function Accounting() {
   }, [draftFrom, draftTo]);
 
   const handleWeekChange = useCallback((value: string) => {
-    setWeekFilter(value);
+    const normalized = value === "all" ? "all" : normalizeWeekStart(value);
+    setWeekFilter(normalized);
     if (value !== "all") {
       setDateFrom("");
       setDateTo("");

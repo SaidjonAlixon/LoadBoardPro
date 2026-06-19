@@ -1,7 +1,8 @@
 import { Router } from "express";
-import { db, loadsTable, driversTable, usersTable, brokersTable } from "@workspace/db";
-import { eq, and, sql, desc, inArray, gte, lte } from "drizzle-orm";
+import { db, loadsTable, driversTable, usersTable, brokersTable, boardWeeksTable } from "@workspace/db";
+import { eq, and, sql, desc, inArray, gte, lte, isNull } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/requireAuth";
+import { mergeWeekBuckets, normalizeWeekStart, weekEndFromStart, getThisWeekStart } from "../lib/week-calendar";
 
 const router = Router();
 
@@ -38,7 +39,7 @@ async function computeDriverStatusToday(dispatcherId?: string) {
   const activeDrivers = await db
     .select({ id: driversTable.id })
     .from(driversTable)
-    .where(eq(driversTable.isActive, true));
+    .where(and(eq(driversTable.isActive, true), isNull(driversTable.deletedAt)));
 
   const driversOnLoadSet = await getDriversOnLoadTodayIds(dispatcherId);
 
@@ -49,33 +50,19 @@ async function computeDriverStatusToday(dispatcherId?: string) {
   return { totalDrivers, driversOnLoad, driversEmpty, driversOnLoadSet };
 }
 
-// GET /api/weekly — list available week periods
+// GET /api/weekly — list available week periods (shared board weeks + load data)
 router.get("/", requireAuth, async (req: AuthRequest, res) => {
-  const weekConditions = [eq(loadsTable.isDeleted, false)];
-  if (req.userRole === "dispatcher" && req.userId) {
-    weekConditions.push(eq(loadsTable.dispatcherId, req.userId));
-  }
+  const thisWeek = getThisWeekStart();
+  await db
+    .insert(boardWeeksTable)
+    .values({ id: crypto.randomUUID(), weekStart: thisWeek, createdBy: null })
+    .onConflictDoNothing();
 
-  const weeks = await db
-    .selectDistinct({ weekStart: loadsTable.weekStart })
-    .from(loadsTable)
-    .where(and(...weekConditions))
-    .orderBy(desc(loadsTable.weekStart))
-    .limit(52);
+  const boardWeeks = await db
+    .select({ weekStart: boardWeeksTable.weekStart })
+    .from(boardWeeksTable)
+    .orderBy(desc(boardWeeksTable.weekStart));
 
-  const result = weeks.map(w => {
-    const start = new Date(w.weekStart);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 6);
-    return {
-      weekStart: w.weekStart,
-      weekEnd: end.toISOString().split("T")[0],
-      loadCount: 0,
-      totalGross: 0,
-    };
-  });
-
-  // Enrich with counts
   const counts = await db
     .select({
       weekStart: loadsTable.weekStart,
@@ -83,30 +70,37 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
       totalGross: sql<number>`coalesce(sum(${loadsTable.rate}::numeric + ${loadsTable.reimbursement}::numeric), 0)`,
     })
     .from(loadsTable)
-    .where(and(...weekConditions))
+    .where(eq(loadsTable.isDeleted, false))
     .groupBy(loadsTable.weekStart);
 
-  const countMap = Object.fromEntries(counts.map(c => [c.weekStart, c]));
-  res.json(result.map(w => ({
-    ...w,
-    loadCount: Number(countMap[w.weekStart]?.loadCount ?? 0),
-    totalGross: Number(countMap[w.weekStart]?.totalGross ?? 0),
-  })));
+  const merged = mergeWeekBuckets([
+    ...boardWeeks.map((b) => ({
+      weekStart: b.weekStart,
+      loadCount: 0,
+      totalGross: 0,
+    })),
+    ...counts.map((c) => ({
+      weekStart: c.weekStart,
+      loadCount: Number(c.loadCount ?? 0),
+      totalGross: Number(c.totalGross ?? 0),
+    })),
+  ]);
+
+  res.json(merged);
 });
 
 // GET /api/weekly/:weekStart
 router.get("/:weekStart", requireAuth, async (req: AuthRequest, res) => {
-  const { weekStart } = req.params;
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekEnd.getDate() + 6);
-  const weekEndStr = weekEnd.toISOString().split("T")[0];
+  const mon = normalizeWeekStart(req.params.weekStart);
+  const weekEndStr = weekEndFromStart(mon);
 
   const dispatcherFilter =
     req.userRole === "dispatcher" && req.userId ? req.userId : undefined;
   const { driversOnLoadSet, ...driverStatus } = await computeDriverStatusToday(dispatcherFilter);
 
   const loadConditions = [
-    eq(loadsTable.weekStart, weekStart),
+    gte(loadsTable.puDate, mon),
+    lte(loadsTable.puDate, weekEndStr),
     eq(loadsTable.isDeleted, false),
   ];
   if (dispatcherFilter) {
@@ -122,7 +116,7 @@ router.get("/:weekStart", requireAuth, async (req: AuthRequest, res) => {
   const activeDrivers = await db
     .select()
     .from(driversTable)
-    .where(eq(driversTable.isActive, true))
+    .where(and(eq(driversTable.isActive, true), isNull(driversTable.deletedAt)))
     .orderBy(driversTable.fullName);
 
   const buildEmptyResponse = () => {
@@ -147,7 +141,7 @@ router.get("/:weekStart", requireAuth, async (req: AuthRequest, res) => {
     const driversEmptyToday = emptyBlocks.filter((b) => !driversOnLoadSet.has(b.driver.id));
 
     return {
-      weekStart,
+      weekStart: mon,
       weekEnd: weekEndStr,
       drivers: [],
       driversOnLoadToday,
@@ -275,7 +269,7 @@ router.get("/:weekStart", requireAuth, async (req: AuthRequest, res) => {
   const cdCount = drivers.filter(d => activeDriverIds.has(d.id) && d.driverType === "CD").length;
 
   res.json({
-    weekStart,
+    weekStart: mon,
     weekEnd: weekEndStr,
     drivers: driverBlocks,
     driversOnLoadToday,

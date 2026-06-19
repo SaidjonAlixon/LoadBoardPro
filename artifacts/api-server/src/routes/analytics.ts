@@ -1,34 +1,23 @@
 import { Router } from "express";
 import { db, driversTable, loadsTable, usersTable } from "@workspace/db";
-import { eq, and, gte, lte, sql, ne, inArray, type SQL } from "drizzle-orm";
+import { eq, and, gte, lte, sql, ne, inArray, isNull, type SQL } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/requireAuth";
 import { getDriversTodayStatus, ON_LOAD_STATUSES } from "../lib/driver-status-today";
+import { mergeWeekBuckets, normalizeWeekStart, weekEndFromStart } from "../lib/week-calendar";
+import { applyWeekPeriodFilters } from "../lib/period-filters";
 
 const router = Router();
 
-function applyPeriodFilters(
-  conditions: SQL[],
-  query: Record<string, string | undefined>,
-) {
-  const { dateFrom, dateTo, weekStart } = query;
-  if (weekStart) {
-    conditions.push(eq(loadsTable.weekStart, weekStart));
-  } else {
-    if (dateFrom) conditions.push(gte(loadsTable.puDate, dateFrom));
-    if (dateTo) conditions.push(lte(loadsTable.puDate, dateTo));
-  }
-}
-
 // GET /api/analytics/kpi
 router.get("/kpi", requireAuth, async (req: AuthRequest, res) => {
-  const { dispatcherId, driverId, weekStart } = req.query as Record<string, string>;
+  const { dispatcherId, driverId, weekStart, weekStarts } = req.query as Record<string, string>;
   const dateFrom = req.query.dateFrom as string | undefined;
   const dateTo = req.query.dateTo as string | undefined;
   const isDispatcher = req.userRole === "dispatcher" && req.userId;
   const scopedDispatcherId = isDispatcher ? req.userId! : dispatcherId;
 
   const conditions = [eq(loadsTable.isDeleted, false)];
-  applyPeriodFilters(conditions, { dateFrom, dateTo, weekStart });
+  applyWeekPeriodFilters(conditions, { dateFrom, dateTo, weekStart, weekStarts });
   if (scopedDispatcherId) conditions.push(eq(loadsTable.dispatcherId, scopedDispatcherId));
   if (driverId) conditions.push(eq(loadsTable.driverId, driverId));
   const where = and(...conditions);
@@ -56,7 +45,7 @@ router.get("/kpi", requireAuth, async (req: AuthRequest, res) => {
       eq(loadsTable.dispatcherId, scopedDispatcherId!),
       sql`${loadsTable.driverId} is not null`,
     ];
-    applyPeriodFilters(poolConditions, { dateFrom, dateTo, weekStart });
+    applyWeekPeriodFilters(poolConditions, { dateFrom, dateTo, weekStart, weekStarts });
 
     const poolRows = await db
       .selectDistinct({ driverId: loadsTable.driverId })
@@ -70,7 +59,7 @@ router.get("/kpi", requireAuth, async (req: AuthRequest, res) => {
     const activeDrivers = await db
       .select({ id: driversTable.id })
       .from(driversTable)
-      .where(eq(driversTable.isActive, true));
+      .where(and(eq(driversTable.isActive, true), isNull(driversTable.deletedAt)));
     driverIdPool = new Set(activeDrivers.map((d) => d.id));
   }
 
@@ -79,7 +68,7 @@ router.get("/kpi", requireAuth, async (req: AuthRequest, res) => {
     inArray(loadsTable.status, [...ON_LOAD_STATUSES]),
     sql`${loadsTable.driverId} is not null`,
   ];
-  applyPeriodFilters(onLoadConditions, { dateFrom, dateTo, weekStart });
+  applyWeekPeriodFilters(onLoadConditions, { dateFrom, dateTo, weekStart, weekStarts });
   if (scopedDispatcherId) {
     onLoadConditions.push(eq(loadsTable.dispatcherId, scopedDispatcherId));
   }
@@ -116,22 +105,21 @@ router.get("/kpi", requireAuth, async (req: AuthRequest, res) => {
   });
 });
 
-// GET /api/analytics/ranking
+// GET /api/analytics/ranking — company-wide leaderboard (optional dispatcherId filter)
 router.get("/ranking", requireAuth, async (req: AuthRequest, res) => {
-  const { dispatcherId, weekStart } = req.query as Record<string, string>;
+  const { dispatcherId, weekStart, weekStarts } = req.query as Record<string, string>;
   const dateFrom = req.query.dateFrom as string | undefined;
   const dateTo = req.query.dateTo as string | undefined;
-  const isDispatcher = req.userRole === "dispatcher" && req.userId;
-  const scopedDispatcherId = isDispatcher ? req.userId! : dispatcherId;
 
   const conditions = [
     eq(loadsTable.isDeleted, false),
     ne(loadsTable.status, "Canceled"),
+    sql`${loadsTable.dispatcherId} is not null`,
   ];
-  applyPeriodFilters(conditions, { dateFrom, dateTo, weekStart });
-  if (scopedDispatcherId) conditions.push(eq(loadsTable.dispatcherId, scopedDispatcherId));
+  applyWeekPeriodFilters(conditions, { dateFrom, dateTo, weekStart, weekStarts });
+  if (dispatcherId) conditions.push(eq(loadsTable.dispatcherId, dispatcherId));
 
-  const ranking = await db
+  const loadStats = await db
     .select({
       dispatcherId: loadsTable.dispatcherId,
       gross: sql<number>`coalesce(sum(${loadsTable.rate}::numeric + ${loadsTable.reimbursement}::numeric), 0)`,
@@ -141,44 +129,54 @@ router.get("/ranking", requireAuth, async (req: AuthRequest, res) => {
     })
     .from(loadsTable)
     .where(and(...conditions))
-    .groupBy(loadsTable.dispatcherId)
-    .orderBy(sql`sum(${loadsTable.rate}::numeric + ${loadsTable.reimbursement}::numeric) desc`)
-    .limit(10);
+    .groupBy(loadsTable.dispatcherId);
 
-  const dispatcherIds = ranking.map(r => r.dispatcherId).filter(Boolean) as string[];
-  const dispatchers = dispatcherIds.length
-    ? await db.select().from(usersTable).where(inArray(usersTable.id, dispatcherIds))
-    : [];
-  const dispMap = Object.fromEntries(dispatchers.map(d => [d.id, d]));
+  const statsByDispatcher = new Map(
+    loadStats
+      .filter((r) => r.dispatcherId)
+      .map((r) => [r.dispatcherId!, r]),
+  );
 
-  const result = ranking.map((r, idx) => {
-    const gross = Number(r.gross);
-    const avgRpm = Number(r.avgRpm);
-    const kpiScore = (gross * avgRpm) / 1000;
-    return {
-      dispatcherId: r.dispatcherId ?? "",
-      dispatcherName: r.dispatcherId ? (dispMap[r.dispatcherId]?.name ?? dispMap[r.dispatcherId]?.email ?? "Unknown") : "Unassigned",
-      gross,
-      miles: Number(r.miles),
-      loads: Number(r.loads),
-      avgRpm,
-      kpiScore: Math.round(kpiScore * 10) / 10,
-    };
-  });
+  const dispatcherConditions = [eq(usersTable.role, "dispatcher"), eq(usersTable.isActive, true)];
+  if (dispatcherId) dispatcherConditions.push(eq(usersTable.id, dispatcherId));
+
+  const allDispatchers = await db
+    .select()
+    .from(usersTable)
+    .where(and(...dispatcherConditions))
+    .orderBy(usersTable.name);
+
+  const result = allDispatchers
+    .map((d) => {
+      const stats = statsByDispatcher.get(d.id);
+      const gross = Number(stats?.gross ?? 0);
+      const avgRpm = Number(stats?.avgRpm ?? 0);
+      const kpiScore = Math.round(((gross * avgRpm) / 1000) * 10) / 10;
+      return {
+        dispatcherId: d.id,
+        dispatcherName: d.name ?? d.email ?? "Unknown",
+        gross,
+        miles: Number(stats?.miles ?? 0),
+        loads: Number(stats?.loads ?? 0),
+        avgRpm,
+        kpiScore,
+      };
+    })
+    .sort((a, b) => b.kpiScore - a.kpiScore || b.gross - a.gross);
 
   res.json(result);
 });
 
 // GET /api/analytics/status-breakdown
 router.get("/status-breakdown", requireAuth, async (req: AuthRequest, res) => {
-  const { dispatcherId, weekStart } = req.query as Record<string, string>;
+  const { dispatcherId, weekStart, weekStarts } = req.query as Record<string, string>;
   const dateFrom = req.query.dateFrom as string | undefined;
   const dateTo = req.query.dateTo as string | undefined;
   const isDispatcher = req.userRole === "dispatcher" && req.userId;
   const scopedDispatcherId = isDispatcher ? req.userId! : dispatcherId;
 
   const conditions = [eq(loadsTable.isDeleted, false)];
-  applyPeriodFilters(conditions, { dateFrom, dateTo, weekStart });
+  applyWeekPeriodFilters(conditions, { dateFrom, dateTo, weekStart, weekStarts });
   if (scopedDispatcherId) conditions.push(eq(loadsTable.dispatcherId, scopedDispatcherId));
 
   const result = await db

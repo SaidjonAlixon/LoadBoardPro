@@ -3,18 +3,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useGetKpi,
   useGetDispatcherRanking,
-  useGetStatusBreakdown,
-  useListLoads,
-  useListWeeks,
   useGetMe,
   type User,
 } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
-import { LoadStatusBadge } from "@/components/load-status-badge";
 import { DashboardPeriodToolbar } from "@/components/dashboard-period-toolbar";
 import { DriverStatusChips } from "@/components/driver-status-chips";
 import { DriverTodayPanel } from "@/components/driver-today-panel";
@@ -24,40 +18,20 @@ import {
   type DriverChipFilter,
 } from "@/lib/drivers-today";
 import { DollarSign, Route, TrendingUp, Divide } from "lucide-react";
-import { Link } from "wouter";
-import { useI18n, translateLoadStatus } from "@/lib/i18n";
+import { useI18n } from "@/lib/i18n";
+import { translateLoadStatus } from "@/lib/i18n/translate";
 import { toast } from "sonner";
 import {
   buildDashboardFilterParams,
   formatWeekRangeLabel,
-  type DashboardDateRange,
+  getThisWeekStart,
+  normalizeWeekStart,
 } from "@/lib/date-range";
 import {
   exportDashboardExcel,
   fetchAllFilteredLoads,
   getDashboardLoadsExportLabels,
 } from "@/lib/export-dashboard-excel";
-
-const STATUS_COLORS: Record<string, string> = {
-  Booked: "#2196F3",
-  InQM: "#E65100",
-  PickedUp: "#E65100",
-  Delivered: "#2E7D32",
-  Canceled: "#C62828",
-  Completed: "#00695C",
-  NeedRevRC: "#6A1B9A",
-  Issue: "#F57F17",
-  Checked: "#00838F",
-  Invoiced: "#4527A0",
-  Reinvoiced: "#6A1B9A",
-  BrokerPaid: "#2E7D32",
-};
-
-const DATE_RANGE_KEYS: Record<DashboardDateRange, string> = {
-  thisWeek: "dashboard.thisWeek",
-  lastWeek: "dashboard.lastWeek",
-  thisMonth: "dashboard.thisMonth",
-};
 
 const AUTO_REFRESH_SEC = 20;
 
@@ -70,8 +44,7 @@ async function listDispatchers(): Promise<User[]> {
 export default function Dashboard() {
   const { t, locale, formatCurrency, formatDate, formatNumber } = useI18n();
   const qc = useQueryClient();
-  const [dateRange, setDateRange] = useState<DashboardDateRange>("thisWeek");
-  const [weekFilter, setWeekFilter] = useState("all");
+  const [selectedWeeks, setSelectedWeeks] = useState<string[]>(() => [getThisWeekStart()]);
   const [dispatcherFilter, setDispatcherFilter] = useState("all");
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshCountdown, setRefreshCountdown] = useState(AUTO_REFRESH_SEC);
@@ -87,21 +60,23 @@ export default function Dashboard() {
   const filterParams = useMemo(
     () =>
       buildDashboardFilterParams({
-        dateRange,
-        weekFilter,
+        dateRange: "thisWeek",
+        weekFilters: selectedWeeks,
         dispatcherFilter: isDispatcher ? "all" : dispatcherFilter,
       }),
-    [dateRange, weekFilter, dispatcherFilter, isDispatcher],
+    [selectedWeeks, dispatcherFilter, isDispatcher],
   );
 
   const { data: kpi, isLoading: kpiLoading } = useGetKpi(filterParams);
   const { data: ranking, isLoading: rankingLoading } = useGetDispatcherRanking(filterParams);
-  const { data: statusBreakdown, isLoading: statusLoading } = useGetStatusBreakdown(filterParams);
-  const { data: recentLoads, isLoading: loadsLoading } = useListLoads({
-    ...filterParams,
-    limit: 5,
+  const { data: weeks = [] } = useQuery<{ weekStart: string; loadCount?: number }[]>({
+    queryKey: ["/api/board-weeks"],
+    queryFn: async () => {
+      const res = await fetch("/api/board-weeks", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load weeks");
+      return res.json();
+    },
   });
-  const { data: weeks } = useListWeeks({});
   const { data: dispatchers } = useQuery({
     queryKey: ["/api/users/dispatchers"],
     queryFn: listDispatchers,
@@ -141,6 +116,7 @@ export default function Dashboard() {
           return typeof key === "string" && (
             key.startsWith("/api/analytics")
             || key.startsWith("/api/loads")
+            || key === "/api/board-weeks"
           );
         },
       });
@@ -185,11 +161,11 @@ export default function Dashboard() {
   );
 
   const periodLabel = useMemo(() => {
-    if (weekFilter !== "all") {
-      return t("dashboard.filteredByWeek", { range: formatWeekRangeLabel(weekFilter, formatDate) });
-    }
-    return t(DATE_RANGE_KEYS[dateRange]);
-  }, [weekFilter, dateRange, formatDate, t]);
+    const weeks = [...new Set(selectedWeeks.map(normalizeWeekStart).filter(Boolean))].sort();
+    if (weeks.length === 1) return formatWeekRangeLabel(weeks[0]!, formatDate);
+    if (weeks.length > 1) return t("dashboard.weeksSelected", { count: weeks.length });
+    return formatWeekRangeLabel(getThisWeekStart(), formatDate);
+  }, [selectedWeeks, formatDate, t]);
 
   const selectedDispatcherName = useMemo(() => {
     if (dispatcherFilter === "all") return null;
@@ -197,14 +173,29 @@ export default function Dashboard() {
     return d?.name || d?.email || null;
   }, [dispatcherFilter, dispatchers]);
 
-  const handleDateRange = (range: DashboardDateRange) => {
-    setDateRange(range);
-    setWeekFilter("all");
+  const handleWeeksChange = (value: string[]) => {
+    const normalized = [...new Set(value.map(normalizeWeekStart).filter(Boolean))];
+    if (normalized.length === 0) return;
+    setSelectedWeeks(normalized.sort((a, b) => b.localeCompare(a)));
   };
 
-  const handleWeekChange = (value: string) => {
-    setWeekFilter(value);
-  };
+  useEffect(() => {
+    if (!weeks?.length) return;
+    const merged = new Map<string, number>();
+    for (const w of weeks) {
+      const mon = normalizeWeekStart(w.weekStart);
+      merged.set(mon, (merged.get(mon) ?? 0) + (w.loadCount ?? 0));
+    }
+    const starts = [...merged.keys()].sort((a, b) => b.localeCompare(a));
+    const current = selectedWeeks.map(normalizeWeekStart);
+    const valid = current.filter((w) => starts.includes(w));
+    if (valid.length === 0) {
+      const fallback = starts.includes(getThisWeekStart()) ? getThisWeekStart() : starts[0]!;
+      setSelectedWeeks([fallback]);
+    } else if (valid.length !== current.length) {
+      setSelectedWeeks(valid.sort((a, b) => b.localeCompare(a)));
+    }
+  }, [weeks, selectedWeeks]);
 
   const handleExport = async () => {
     if (!kpi) {
@@ -221,7 +212,7 @@ export default function Dashboard() {
           dispatcherLabel: selectedDispatcherName ?? t("dashboard.allDispatchers"),
           kpi,
           ranking: ranking ?? [],
-          statusBreakdown: statusBreakdown ?? [],
+          statusBreakdown: [],
           loads,
           formatCurrency,
           formatDate,
@@ -231,7 +222,7 @@ export default function Dashboard() {
           filePrefix: "dashboard",
           sheets: {
             summary: t("dashboard.exportSheetSummary"),
-            performance: isDispatcher ? t("dashboard.myPerformance") : t("dashboard.leaderboard"),
+            performance: t("dashboard.leaderboard"),
             status: t("dashboard.loadStatus"),
             loads: t("dashboard.exportSheetLoads"),
           },
@@ -292,11 +283,9 @@ export default function Dashboard() {
         <DashboardPeriodToolbar
           t={t}
           formatDate={formatDate}
-          dateRange={dateRange}
-          weekFilter={weekFilter}
+          selectedWeeks={selectedWeeks}
           activeWeeks={weeks ?? []}
-          onDateRange={handleDateRange}
-          onWeekChange={handleWeekChange}
+          onWeeksChange={handleWeeksChange}
           onRefresh={() => void refreshDashboard()}
           onExport={() => void handleExport()}
           refreshing={refreshing}
@@ -429,16 +418,13 @@ export default function Dashboard() {
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card className="lg:col-span-2">
+      <Card>
           <CardHeader className="pb-2 border-b border-border">
             <CardTitle className="text-lg font-bold text-foreground">
-              {isDispatcher ? t("dashboard.myPerformance") : t("dashboard.leaderboard")}
+              {t("dashboard.leaderboard")}
             </CardTitle>
             <p className="text-sm text-muted-foreground mt-1">
-              {isDispatcher
-                ? t("dashboard.myPerformancePeriod", { period: periodLabel })
-                : t("dashboard.leaderboardPeriod", { period: periodLabel })}
+              {t("dashboard.leaderboardPeriod", { period: periodLabel })}
               {selectedDispatcherName && (
                 <span className="ml-1 font-medium text-foreground">
                   · {t("dashboard.filteredByDispatcher", { name: selectedDispatcherName })}
@@ -468,7 +454,10 @@ export default function Dashboard() {
                   </thead>
                   <tbody>
                     {ranking.map((r, i) => (
-                      <tr key={r.dispatcherId} className="border-b hover:bg-muted/50">
+                      <tr
+                        key={r.dispatcherId}
+                        className={`border-b hover:bg-muted/50 ${me?.id === r.dispatcherId ? "bg-primary/5" : ""}`}
+                      >
                         <td className="px-6 py-4 font-medium">
                           {i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}
                         </td>
@@ -487,85 +476,6 @@ export default function Dashboard() {
             )}
           </CardContent>
         </Card>
-
-        <Card>
-          <CardHeader className="pb-2 border-b border-border">
-            <CardTitle className="text-lg font-bold text-foreground">{t("dashboard.loadStatus")}</CardTitle>
-          </CardHeader>
-          <CardContent className="p-6 flex justify-center items-center h-64">
-            {statusLoading ? <Skeleton className="h-48 w-48 rounded-full" /> : statusBreakdown && statusBreakdown.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={statusBreakdown}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={80}
-                    paddingAngle={5}
-                    dataKey="count"
-                    nameKey="status"
-                  >
-                    {statusBreakdown.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={STATUS_COLORS[entry.status] || '#1A3C5E'} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(value) => [t("dashboard.chartLoads", { count: value as number }), t("dashboard.chartCount")]} />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="text-muted-foreground">{t("dashboard.noStatus")}</div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader className="pb-2 border-b border-border flex flex-row items-center justify-between">
-          <CardTitle className="text-lg font-bold text-foreground">{t("dashboard.recentLoads")}</CardTitle>
-          <Link href="/loads">
-            <Button variant="ghost" size="sm" className="text-accent font-medium" data-testid="link-view-all-loads">{t("common.viewAll")}</Button>
-          </Link>
-        </CardHeader>
-        <CardContent className="p-0">
-          {loadsLoading ? (
-            <div className="p-6 space-y-4">
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-10 w-full" />
-            </div>
-          ) : recentLoads?.data && recentLoads.data.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm text-left">
-                <thead className="text-xs text-muted-foreground bg-muted/50 uppercase border-b">
-                  <tr>
-                    <th className="px-6 py-3">{t("dashboard.loadNumber")}</th>
-                    <th className="px-6 py-3">{t("dashboard.driver")}</th>
-                    <th className="px-6 py-3">{t("dashboard.route")}</th>
-                    <th className="px-6 py-3">{t("dashboard.puDate")}</th>
-                    <th className="px-6 py-3">{t("dashboard.rate")}</th>
-                    <th className="px-6 py-3">{t("dashboard.status")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentLoads.data.map((load) => (
-                    <tr key={load.id} className="border-b hover:bg-muted/50 cursor-pointer transition-colors" onClick={() => window.location.href = `/loads/${load.id}`}>
-                      <td className="px-6 py-4 font-semibold text-foreground">{load.loadNumber}</td>
-                      <td className="px-6 py-4">{load.driver?.fullName || t("common.unassigned")}</td>
-                      <td className="px-6 py-4 truncate max-w-[200px]">{load.originCity}, {load.originState} → {load.destCity}, {load.destState}</td>
-                      <td className="px-6 py-4">{formatDate(load.puDate)}</td>
-                      <td className="px-6 py-4 font-medium">{formatCurrency(load.rate)}</td>
-                      <td className="px-6 py-4"><LoadStatusBadge status={load.status} /></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-             <div className="p-8 text-center text-muted-foreground">{t("dashboard.noRecentLoads")}</div>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }

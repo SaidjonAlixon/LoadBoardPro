@@ -3,6 +3,12 @@ import { db, loadsTable, driversTable, usersTable, brokersTable, notificationsTa
 import { eq, and, or, like, ilike, desc, gte, lte, sql, inArray, asc, isNull } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/requireAuth";
 import { isLoadDispatcherLocked } from "../lib/load-statuses";
+import { getMondayOfWeek, normalizeWeekStart, todayIsoLocal, weekEndFromStart } from "../lib/week-calendar";
+import { applyWeekPeriodFilters } from "../lib/period-filters";
+import {
+  isDraftLoadNumberValue,
+  validateDispatcherLoadInput,
+} from "../lib/validate-load";
 
 const router = Router();
 
@@ -74,24 +80,17 @@ function serializeBroker(b: typeof brokersTable.$inferSelect) {
 // GET /api/loads
 router.get("/", requireAuth, async (req: AuthRequest, res) => {
   const {
-    status, driverId, dispatcherId, brokerId, weekStart,
+    status, driverId, dispatcherId, brokerId, weekStart, weekStarts,
     dateFrom, dateTo, search, page = "1", limit = "50"
   } = req.query as Record<string, string>;
 
   const conditions = [eq(loadsTable.isDeleted, false)];
 
-  // Dispatcher can only see their own loads
-  if (req.userRole === "dispatcher") {
-    conditions.push(eq(loadsTable.dispatcherId, req.userId!));
-  }
-
   if (status) conditions.push(eq(loadsTable.status, status as any));
   if (driverId) conditions.push(eq(loadsTable.driverId, driverId));
   if (dispatcherId) conditions.push(eq(loadsTable.dispatcherId, dispatcherId));
   if (brokerId) conditions.push(eq(loadsTable.brokerId, brokerId));
-  if (weekStart) conditions.push(eq(loadsTable.weekStart, weekStart));
-  if (dateFrom) conditions.push(gte(loadsTable.puDate, dateFrom));
-  if (dateTo) conditions.push(lte(loadsTable.puDate, dateTo));
+  applyWeekPeriodFilters(conditions, { dateFrom, dateTo, weekStart, weekStarts });
   if (search) {
     conditions.push(
       or(
@@ -157,6 +156,29 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
     .from(loadsTable)
     .where(and(eq(loadsTable.isDeleted, false), driverCondition));
 
+  const resolvedWeekStart = getMondayOfWeek(puDate || weekStart || todayIsoLocal());
+
+  const isDispatcherRole = req.userRole === "dispatcher" || req.userRole === "admin";
+  if (isDispatcherRole && !isDraftLoadNumberValue(loadNumber)) {
+    const errors = validateDispatcherLoadInput({
+      loadNumber,
+      puDate,
+      delDate,
+      originCity,
+      originState,
+      destCity,
+      destState,
+      mileage,
+      rate,
+      reimbursement,
+      status: status ?? "Booked",
+    });
+    if (errors.length > 0) {
+      res.status(400).json({ error: `Required fields: ${errors.join(", ")}` });
+      return;
+    }
+  }
+
   const [load] = await db.insert(loadsTable).values({
     id: crypto.randomUUID(),
     loadNumber,
@@ -175,7 +197,7 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
     reimbursement: String(reimbursement ?? 0),
     dispatchNotes: dispatchNotes ?? null,
     notes: notes ?? null,
-    weekStart,
+    weekStart: resolvedWeekStart,
     sortOrder: Number(maxRow?.max ?? -1) + 1,
   }).returning();
 
@@ -247,6 +269,11 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
 
   if (isLoadDispatcherLocked(load.status) && req.userRole !== "accounting") {
     res.status(403).json({ error: "Load is locked for accounting review" });
+    return;
+  }
+
+  if (req.userRole === "dispatcher" && load.dispatcherId !== req.userId) {
+    res.status(403).json({ error: "You can only edit your own loads" });
     return;
   }
 
@@ -328,6 +355,19 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
     updates.sortOrder = Number(maxRow?.max ?? -1) + 1;
   }
 
+  if ("puDate" in updates && updates.puDate) {
+    updates.weekStart = getMondayOfWeek(String(updates.puDate));
+  }
+
+  const isDispatcherRole = req.userRole === "dispatcher" || req.userRole === "admin";
+  if (isDispatcherRole && "loadNumber" in updates) {
+    const num = String(updates.loadNumber ?? "").trim();
+    if (!num || num.startsWith("NEW-")) {
+      res.status(400).json({ error: "Invalid load number" });
+      return;
+    }
+  }
+
   const [updated] = await db.update(loadsTable).set(updates).where(eq(loadsTable.id, req.params.id)).returning();
   if (!updated) {
     res.status(404).json({ error: "Not found" });
@@ -361,6 +401,10 @@ router.delete("/:id", requireAuth, requireRole("admin", "dispatcher"), async (re
     res.status(404).json({ error: "Not found" });
     return;
   }
+  if (req.userRole === "dispatcher" && load.dispatcherId !== req.userId) {
+    res.status(403).json({ error: "You can only delete your own loads" });
+    return;
+  }
   if (req.userRole === "dispatcher" && isLoadDispatcherLocked(load.status)) {
     res.status(403).json({ error: "Load is locked for accounting review" });
     return;
@@ -388,14 +432,18 @@ router.get("/accounting/summary", requireAuth, async (req, res) => {
     .from(loadsTable)
     .where(and(...conditions));
 
-  const weekStart = new Date();
-  weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1); // Monday
-  const weekStartStr = weekStart.toISOString().split("T")[0];
+  const weekStartStr = getMondayOfWeek(todayIsoLocal());
 
   const weekResult = await db
     .select({ brokerPaidThisWeek: sql<number>`coalesce(sum(${loadsTable.brokerPaid}::numeric), 0)` })
     .from(loadsTable)
-    .where(and(eq(loadsTable.isDeleted, false), gte(loadsTable.weekStart, weekStartStr)));
+    .where(
+      and(
+        eq(loadsTable.isDeleted, false),
+        gte(loadsTable.puDate, weekStartStr),
+        lte(loadsTable.puDate, weekEndFromStart(weekStartStr)),
+      ),
+    );
 
   res.json({
     totalInvoiced: Number(result[0]?.totalInvoiced ?? 0),
