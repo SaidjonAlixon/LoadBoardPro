@@ -1,5 +1,5 @@
-import { useState, useMemo, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useGetKpi,
   useGetDispatcherRanking,
@@ -15,13 +15,28 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
 import { LoadStatusBadge } from "@/components/load-status-badge";
-import { DollarSign, Route, TrendingUp, Users, Divide } from "lucide-react";
+import { DashboardPeriodToolbar } from "@/components/dashboard-period-toolbar";
+import { DriverStatusChips } from "@/components/driver-status-chips";
+import { DriverTodayPanel } from "@/components/driver-today-panel";
+import {
+  fetchDriversToday,
+  driversForChipFilter,
+  type DriverChipFilter,
+} from "@/lib/drivers-today";
+import { DollarSign, Route, TrendingUp, Divide } from "lucide-react";
 import { Link } from "wouter";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, translateLoadStatus } from "@/lib/i18n";
+import { toast } from "sonner";
 import {
   buildDashboardFilterParams,
+  formatWeekRangeLabel,
   type DashboardDateRange,
 } from "@/lib/date-range";
+import {
+  exportDashboardExcel,
+  fetchAllFilteredLoads,
+  getDashboardLoadsExportLabels,
+} from "@/lib/export-dashboard-excel";
 
 const STATUS_COLORS: Record<string, string> = {
   Booked: "#2196F3",
@@ -38,13 +53,13 @@ const STATUS_COLORS: Record<string, string> = {
   BrokerPaid: "#2E7D32",
 };
 
-const DATE_RANGES = ["thisWeek", "lastWeek", "thisMonth"] as const;
-
 const DATE_RANGE_KEYS: Record<DashboardDateRange, string> = {
   thisWeek: "dashboard.thisWeek",
   lastWeek: "dashboard.lastWeek",
   thisMonth: "dashboard.thisMonth",
 };
+
+const AUTO_REFRESH_SEC = 20;
 
 async function listDispatchers(): Promise<User[]> {
   const res = await fetch("/api/users/dispatchers", { credentials: "include" });
@@ -53,10 +68,17 @@ async function listDispatchers(): Promise<User[]> {
 }
 
 export default function Dashboard() {
-  const { t, formatCurrency, formatDate, formatNumber } = useI18n();
+  const { t, locale, formatCurrency, formatDate, formatNumber } = useI18n();
+  const qc = useQueryClient();
   const [dateRange, setDateRange] = useState<DashboardDateRange>("thisWeek");
   const [weekFilter, setWeekFilter] = useState("all");
   const [dispatcherFilter, setDispatcherFilter] = useState("all");
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [refreshCountdown, setRefreshCountdown] = useState(AUTO_REFRESH_SEC);
+  const [refreshing, setRefreshing] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [now, setNow] = useState(() => new Date());
+  const [driverChipFilter, setDriverChipFilter] = useState<DriverChipFilter | null>(null);
 
   const { data: me } = useGetMe({});
   const isDispatcher = me?.role === "dispatcher";
@@ -79,29 +101,95 @@ export default function Dashboard() {
     ...filterParams,
     limit: 5,
   });
-  const { data: weeks } = useListWeeks({ query: { enabled: canFilter } });
+  const { data: weeks } = useListWeeks({});
   const { data: dispatchers } = useQuery({
     queryKey: ["/api/users/dispatchers"],
     queryFn: listDispatchers,
     enabled: canFilter,
   });
 
-  const formatWeekLabel = useCallback(
-    (weekStart: string) => {
-      const start = new Date(weekStart);
-      const end = new Date(start);
-      end.setDate(end.getDate() + 6);
-      return `${formatDate(start)} – ${formatDate(end)}`;
-    },
-    [formatDate],
+  const todayDispatcherId =
+    isDispatcher ? undefined : dispatcherFilter !== "all" ? dispatcherFilter : undefined;
+
+  const { data: driversToday, isLoading: driversTodayLoading } = useQuery({
+    queryKey: ["/api/analytics/drivers-today", todayDispatcherId ?? "all"],
+    queryFn: () => fetchDriversToday(todayDispatcherId),
+    refetchInterval: autoRefresh ? AUTO_REFRESH_SEC * 1000 : false,
+  });
+
+  const handleDriverChipSelect = (filter: DriverChipFilter) => {
+    setDriverChipFilter((prev) => (prev === filter ? null : filter));
+  };
+
+  useEffect(() => {
+    setDriverChipFilter(null);
+  }, [todayDispatcherId]);
+
+  const driverPanelTitle = useMemo(() => {
+    if (driverChipFilter === "covered") return t("dashboard.driversTodayCovered");
+    if (driverChipFilter === "ready") return t("dashboard.driversTodayReady");
+    if (driverChipFilter === "all") return t("dashboard.driversTodayAll");
+    return "";
+  }, [driverChipFilter, t]);
+
+  const refreshDashboard = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await qc.invalidateQueries({
+        predicate: (q) => {
+          const key = q.queryKey[0];
+          return typeof key === "string" && (
+            key.startsWith("/api/analytics")
+            || key.startsWith("/api/loads")
+          );
+        },
+      });
+      setRefreshCountdown(AUTO_REFRESH_SEC);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [qc]);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const timer = setInterval(() => {
+      setRefreshCountdown((c) => {
+        if (c <= 1) {
+          void refreshDashboard();
+          return AUTO_REFRESH_SEC;
+        }
+        return c - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [autoRefresh, refreshDashboard]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const liveDateTime = useMemo(
+    () =>
+      new Intl.DateTimeFormat(locale === "uz" ? "uz-UZ" : "en-US", {
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(now),
+    [now, locale],
   );
 
   const periodLabel = useMemo(() => {
     if (weekFilter !== "all") {
-      return t("dashboard.filteredByWeek", { range: formatWeekLabel(weekFilter) });
+      return t("dashboard.filteredByWeek", { range: formatWeekRangeLabel(weekFilter, formatDate) });
     }
     return t(DATE_RANGE_KEYS[dateRange]);
-  }, [weekFilter, dateRange, formatWeekLabel, t]);
+  }, [weekFilter, dateRange, formatDate, t]);
 
   const selectedDispatcherName = useMemo(() => {
     if (dispatcherFilter === "all") return null;
@@ -118,37 +206,106 @@ export default function Dashboard() {
     setWeekFilter(value);
   };
 
+  const handleExport = async () => {
+    if (!kpi) {
+      toast.error(t("dashboard.noDataExport"));
+      return;
+    }
+    setExporting(true);
+    try {
+      const loads = await fetchAllFilteredLoads(filterParams);
+      const loadsLabels = getDashboardLoadsExportLabels(t);
+      await exportDashboardExcel(
+        {
+          periodLabel,
+          dispatcherLabel: selectedDispatcherName ?? t("dashboard.allDispatchers"),
+          kpi,
+          ranking: ranking ?? [],
+          statusBreakdown: statusBreakdown ?? [],
+          loads,
+          formatCurrency,
+          formatDate,
+          translateStatus: (s) => translateLoadStatus(t, s),
+        },
+        {
+          filePrefix: "dashboard",
+          sheets: {
+            summary: t("dashboard.exportSheetSummary"),
+            performance: isDispatcher ? t("dashboard.myPerformance") : t("dashboard.leaderboard"),
+            status: t("dashboard.loadStatus"),
+            loads: t("dashboard.exportSheetLoads"),
+          },
+          summary: {
+            title: t("dashboard.title"),
+            period: t("dashboard.exportPeriod"),
+            dispatcher: t("dashboard.filterDispatcher"),
+            allDispatchers: t("dashboard.allDispatchers"),
+            metric: t("dashboard.exportMetric"),
+            value: t("dashboard.exportValue"),
+            totalGross: t("dashboard.totalGross"),
+            totalMiles: t("dashboard.totalMiles"),
+            avgRpm: t("dashboard.avgRpm"),
+            grossPerDriver: t("dashboard.grossPerDriver"),
+            driversTotal: t("dashboard.driversTotal"),
+            driversOnLoad: t("dashboard.driversOnLoad"),
+            driversEmpty: t("dashboard.driversEmpty"),
+          },
+          performance: {
+            rank: t("dashboard.rank"),
+            dispatcher: t("dashboard.dispatcher"),
+            loads: t("dashboard.loads"),
+            gross: t("dashboard.gross"),
+            avgRpm: t("dashboard.avgRpm"),
+            score: t("dashboard.score"),
+          },
+          status: {
+            status: t("dashboard.status"),
+            count: t("dashboard.exportCount"),
+          },
+          loads: {
+            period: t("dashboard.exportPeriod"),
+            dispatcher: t("dashboard.filterDispatcher"),
+            ...loadsLabels,
+          },
+        },
+      );
+      toast.success(t("dashboard.exportDone"));
+    } catch {
+      toast.error(t("dashboard.exportFailed"));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-foreground" data-testid="dashboard-title">
-              {t("dashboard.title")}
-            </h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              {isDispatcher ? t("dashboard.subtitleDispatcher") : t("dashboard.subtitleCompany")}
-            </p>
-          </div>
-          <div className="flex space-x-2 bg-card p-1 rounded-lg shadow-sm border border-border">
-            {DATE_RANGES.map((range) => (
-              <Button
-                key={range}
-                variant={dateRange === range && weekFilter === "all" ? "default" : "ghost"}
-                size="sm"
-                onClick={() => handleDateRange(range)}
-                className={
-                  dateRange === range && weekFilter === "all"
-                    ? "bg-primary text-white"
-                    : "text-muted-foreground"
-                }
-                data-testid={`filter-btn-${range}`}
-              >
-                {t(DATE_RANGE_KEYS[range])}
-              </Button>
-            ))}
-          </div>
+        <div>
+          <h1 className="text-2xl font-bold text-foreground" data-testid="dashboard-title">
+            {t("dashboard.title")}
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            {isDispatcher ? t("dashboard.subtitleDispatcher") : t("dashboard.subtitleCompany")}
+          </p>
         </div>
+
+        <DashboardPeriodToolbar
+          t={t}
+          formatDate={formatDate}
+          dateRange={dateRange}
+          weekFilter={weekFilter}
+          activeWeeks={weeks ?? []}
+          onDateRange={handleDateRange}
+          onWeekChange={handleWeekChange}
+          onRefresh={() => void refreshDashboard()}
+          onExport={() => void handleExport()}
+          refreshing={refreshing}
+          exporting={exporting}
+          autoRefresh={autoRefresh}
+          onAutoRefreshChange={setAutoRefresh}
+          refreshCountdown={refreshCountdown}
+          refreshIntervalSec={AUTO_REFRESH_SEC}
+        />
 
         {canFilter && (
           <div className="flex flex-col sm:flex-row gap-3">
@@ -165,24 +322,11 @@ export default function Dashboard() {
                 ))}
               </SelectContent>
             </Select>
-            <Select value={weekFilter} onValueChange={handleWeekChange}>
-              <SelectTrigger className="w-full sm:w-56 border-border bg-card h-9">
-                <SelectValue placeholder={t("dashboard.filterWeek")} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">{t("dashboard.allWeeks")}</SelectItem>
-                {(weeks ?? []).map((w) => (
-                  <SelectItem key={w.weekStart} value={w.weekStart}>
-                    {formatWeekLabel(w.weekStart)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
           </div>
         )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card>
           <CardContent className="p-6">
             <div className="flex justify-between items-start">
@@ -232,45 +376,58 @@ export default function Dashboard() {
                     {formatCurrency(kpi?.grossPerDriver ?? 0)}
                   </h3>
                 )}
-                <p className="text-xs text-muted-foreground mt-1">
-                  {isDispatcher ? t("dashboard.grossPerDriverHintDispatcher") : t("dashboard.grossPerDriverHintCompany")}
-                </p>
               </div>
               <div className="p-2 bg-amber-50 rounded-lg"><Divide className="h-5 w-5 text-amber-600" /></div>
             </div>
           </CardContent>
         </Card>
-        <Card>
-          <CardContent className="p-6">
-            <div className="flex justify-between items-start">
-              <div className="w-full">
-                <p className="text-sm font-medium text-muted-foreground mb-2">
-                  {isDispatcher ? t("dashboard.driverStatsDispatcher") : t("dashboard.driverStatsCompany")}
-                </p>
-                {kpiLoading ? (
-                  <Skeleton className="h-8 w-full" />
-                ) : (
-                  <div className="space-y-1.5" data-testid="kpi-driver-stats">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">{t("dashboard.driversTotal")}</span>
-                      <span className="font-bold text-foreground">{kpi?.totalDrivers ?? 0}</span>
-                    </div>
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">{t("dashboard.driversOnLoad")}</span>
-                      <span className="font-bold text-[#1976D2]">{kpi?.driversOnLoad ?? 0}</span>
-                    </div>
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">{t("dashboard.driversEmpty")}</span>
-                      <span className="font-bold text-[#2E7D32]">{kpi?.driversEmpty ?? 0}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-              <div className="p-2 bg-orange-50 rounded-lg shrink-0 ml-2"><Users className="h-5 w-5 text-orange-600" /></div>
-            </div>
-          </CardContent>
-        </Card>
       </div>
+
+      <Card>
+        <CardContent className="p-4 sm:p-5">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
+            <p className="text-sm font-medium text-muted-foreground">
+              {isDispatcher ? t("dashboard.driverStatsDispatcher") : t("dashboard.driverStatsCompany")}
+            </p>
+            <p
+              className="text-sm font-semibold text-foreground tabular-nums"
+              data-testid="dashboard-live-clock"
+            >
+              {t("dashboard.liveNow")}: {liveDateTime}
+            </p>
+          </div>
+          {driversTodayLoading ? (
+            <div className="flex flex-wrap gap-2">
+              <Skeleton className="h-10 w-36 rounded-lg" />
+              <Skeleton className="h-10 w-40 rounded-lg" />
+              <Skeleton className="h-10 w-36 rounded-lg" />
+            </div>
+          ) : (
+            <>
+              <DriverStatusChips
+                total={driversToday?.totalDrivers ?? 0}
+                covered={driversToday?.driversOnLoad ?? 0}
+                ready={driversToday?.driversEmpty ?? 0}
+                selected={driverChipFilter}
+                onSelect={handleDriverChipSelect}
+                labels={{
+                  all: t("dashboard.driversAll"),
+                  covered: t("dashboard.driversOnLoad"),
+                  ready: t("dashboard.driversEmpty"),
+                }}
+              />
+              {driverChipFilter && driversToday && (
+                <DriverTodayPanel
+                  filter={driverChipFilter}
+                  drivers={driversForChipFilter(driversToday, driverChipFilter)}
+                  todayDate={driversToday.date}
+                  title={driverPanelTitle}
+                />
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <Card className="lg:col-span-2">

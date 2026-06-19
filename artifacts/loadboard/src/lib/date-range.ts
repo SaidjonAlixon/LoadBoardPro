@@ -14,10 +14,46 @@ export function getMondayOfWeek(dateStr: string): string {
   return toIsoDate(d);
 }
 
-function addDays(dateStr: string, days: number): string {
+export function addDays(dateStr: string, days: number): string {
   const d = new Date(dateStr);
   d.setDate(d.getDate() + days);
   return toIsoDate(d);
+}
+
+/** ISO week id e.g. 2026-25 for PID label */
+export function getWeekPid(weekStart: string): string {
+  const d = new Date(`${weekStart}T12:00:00`);
+  const day = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - day + 3);
+  const year = d.getFullYear();
+  const jan4 = new Date(year, 0, 4);
+  const jan4Day = (jan4.getDay() + 6) % 7;
+  const week1Monday = new Date(jan4);
+  week1Monday.setDate(jan4.getDate() - jan4Day);
+  const diff = d.getTime() - week1Monday.getTime();
+  const week = Math.floor(diff / (7 * 24 * 60 * 60 * 1000)) + 1;
+  return `${year}-${String(week).padStart(2, "0")}`;
+}
+
+export function getThisWeekStart(): string {
+  return getMondayOfWeek(toIsoDate(new Date()));
+}
+
+export function getLastWeekStart(): string {
+  return addDays(getThisWeekStart(), -7);
+}
+
+export function buildRecentWeekStarts(count = 20): string[] {
+  const start = getThisWeekStart();
+  return Array.from({ length: count }, (_, i) => addDays(start, -7 * i));
+}
+
+export function formatWeekRangeLabel(
+  weekStart: string,
+  formatDate: (d: string | Date) => string,
+): string {
+  const end = addDays(weekStart, 6);
+  return `${formatDate(weekStart)} – ${formatDate(end)}`;
 }
 
 export function getDashboardKpiParams(range: DashboardDateRange): {

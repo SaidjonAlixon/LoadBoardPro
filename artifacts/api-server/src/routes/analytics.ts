@@ -2,10 +2,9 @@ import { Router } from "express";
 import { db, driversTable, loadsTable, usersTable } from "@workspace/db";
 import { eq, and, gte, lte, sql, ne, inArray, type SQL } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/requireAuth";
+import { getDriversTodayStatus, ON_LOAD_STATUSES } from "../lib/driver-status-today";
 
 const router = Router();
-
-const ON_LOAD_STATUSES = ["Booked", "InQM", "NeedRevRC", "Issue", "PickedUp"] as const;
 
 function applyPeriodFilters(
   conditions: SQL[],
@@ -192,6 +191,16 @@ router.get("/status-breakdown", requireAuth, async (req: AuthRequest, res) => {
     .groupBy(loadsTable.status);
 
   res.json(result.map(r => ({ status: r.status, count: Number(r.count) })));
+});
+
+// GET /api/analytics/drivers-today — live driver status for today (not period filters)
+router.get("/drivers-today", requireAuth, async (req: AuthRequest, res) => {
+  const { dispatcherId } = req.query as Record<string, string>;
+  const isDispatcher = req.userRole === "dispatcher" && req.userId;
+  const scopedDispatcherId = isDispatcher ? req.userId! : dispatcherId || undefined;
+
+  const result = await getDriversTodayStatus(scopedDispatcherId);
+  res.json(result);
 });
 
 export default router;

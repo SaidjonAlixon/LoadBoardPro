@@ -133,6 +133,33 @@ function sortLoadsByOrder(loads: Load[]): Load[] {
   });
 }
 
+function driverCreatedTime(driver: Load["driver"] | Driver | null | undefined): number {
+  if (!driver?.createdAt) return Number.MAX_SAFE_INTEGER;
+  return new Date(driver.createdAt).getTime();
+}
+
+function groupFirstLoadTime(loads: Load[]): number {
+  if (loads.length === 0) return Number.MAX_SAFE_INTEGER;
+  return Math.min(
+    ...loads.map((l) => {
+      if (l.createdAt) return new Date(l.createdAt).getTime();
+      return (l.sortOrder ?? 0) * 1000;
+    }),
+  );
+}
+
+function sortDriverGroups(
+  groups: { driver: Load["driver"]; driverId: string | null; loads: Load[] }[],
+) {
+  return [...groups].sort((a, b) => {
+    const aHasLoads = a.loads.length > 0;
+    const bHasLoads = b.loads.length > 0;
+    if (aHasLoads !== bHasLoads) return aHasLoads ? -1 : 1;
+    if (aHasLoads) return groupFirstLoadTime(a.loads) - groupFirstLoadTime(b.loads);
+    return driverCreatedTime(a.driver) - driverCreatedTime(b.driver);
+  });
+}
+
 function groupLoadsByDriver(loads: Load[], drivers: Driver[]) {
   const map = new Map<string, { driver: Load["driver"]; driverId: string | null; loads: Load[] }>();
   for (const load of loads) {
@@ -142,7 +169,10 @@ function groupLoadsByDriver(loads: Load[], drivers: Driver[]) {
     }
     map.get(key)!.loads.push(load);
   }
-  for (const d of drivers.filter((x) => x.isActive)) {
+  const activeDrivers = [...drivers.filter((x) => x.isActive)].sort(
+    (a, b) => driverCreatedTime(a) - driverCreatedTime(b),
+  );
+  for (const d of activeDrivers) {
     if (!map.has(d.id)) {
       map.set(d.id, {
         driver: d,
@@ -151,10 +181,12 @@ function groupLoadsByDriver(loads: Load[], drivers: Driver[]) {
       });
     }
   }
-  return Array.from(map.values()).map((group) => ({
-    ...group,
-    loads: sortLoadsByOrder(group.loads),
-  }));
+  return sortDriverGroups(
+    Array.from(map.values()).map((group) => ({
+      ...group,
+      loads: sortLoadsByOrder(group.loads),
+    })),
+  );
 }
 
 function sumField(loads: Load[], field: keyof Load): number {

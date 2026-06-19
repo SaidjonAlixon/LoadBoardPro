@@ -316,6 +316,18 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
     return;
   }
 
+  if ("driverId" in updates && (updates.driverId ?? null) !== (load.driverId ?? null)) {
+    const nextDriverId = (updates.driverId as string | null) ?? null;
+    const driverCondition = nextDriverId
+      ? eq(loadsTable.driverId, nextDriverId)
+      : isNull(loadsTable.driverId);
+    const [maxRow] = await db
+      .select({ max: sql<number>`coalesce(max(${loadsTable.sortOrder}), -1)` })
+      .from(loadsTable)
+      .where(and(eq(loadsTable.isDeleted, false), driverCondition));
+    updates.sortOrder = Number(maxRow?.max ?? -1) + 1;
+  }
+
   const [updated] = await db.update(loadsTable).set(updates).where(eq(loadsTable.id, req.params.id)).returning();
   if (!updated) {
     res.status(404).json({ error: "Not found" });
