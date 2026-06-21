@@ -1,11 +1,11 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Broker, Driver, Load, LoadStatus, LoadUpdate } from "@workspace/api-client-react";
-import { useCreateLoad, useDeleteLoad, updateLoad } from "@workspace/api-client-react";
+import { useCreateLoad, useDeleteLoad, useGetKpi, updateLoad } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { LoadsWeekToolbar, type BoardWeek } from "@/components/loads-week-toolbar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { Plus, Eye, Trash2, Columns2, GripVertical } from "lucide-react";
+import { Plus, Eye, Trash2, Columns2, GripVertical, DollarSign, Route, TrendingUp, Divide } from "lucide-react";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -96,18 +96,17 @@ function buildTotalsColumns(
   return cols;
 }
 
-const HDR =
-  "bg-sheet-hdr text-sheet-hdr-fg text-[10px] font-bold uppercase px-1.5 py-1 border-r border-sheet-hdr-border sticky top-0 z-10 text-center align-middle overflow-hidden text-ellipsis whitespace-nowrap relative";
+const SHEET_ROW_COMPACT = "px-1.5 py-1 min-h-[32px] text-[10px] leading-tight";
+const SHEET_ROW_WIDE = "px-2.5 py-1.5 min-h-[36px] text-xs leading-tight";
+
+const HDR_BASE =
+  "relative bg-sheet-hdr text-sheet-hdr-fg font-bold uppercase tracking-wide border-r border-sheet-hdr-border sticky top-0 z-30 text-center align-middle whitespace-nowrap antialiased shadow-[0_1px_0_hsl(var(--sheet-hdr-border))]";
 const CELL =
   `px-1.5 py-0.5 border-r border-b border-sheet-border text-[11px] bg-sheet-cell text-sheet-cell-fg text-center align-middle ${SHEET_CELL_CLIP}`;
 const GROUP_CELL =
-  "px-1.5 py-0.5 border-r border-b border-sheet-border text-[11px] bg-sheet-group text-sheet-cell-fg text-center align-middle font-semibold whitespace-nowrap";
-const TOTAL_CELL =
-  `px-1.5 py-0.5 border-r border-b border-sheet-hdr-border text-[11px] bg-sheet-total text-sheet-total-fg font-bold text-center align-middle ${SHEET_CELL_CLIP}`;
-const TOTAL_MONEY_CELL =
-  "px-1.5 py-0.5 border-r border-b border-sheet-hdr-border text-[11px] bg-sheet-total text-sheet-total-fg font-bold text-center align-middle tabular-nums whitespace-nowrap";
-const TOTAL_LABEL_CELL =
-  "px-1.5 py-0.5 border-r border-b border-sheet-hdr-border text-[11px] bg-sheet-total text-sheet-total-fg font-semibold text-center align-middle whitespace-nowrap";
+  "px-1.5 py-0.5 border-r border-b border-sheet-border text-[11px] bg-sheet-group text-sheet-cell-fg text-center align-middle";
+const TOTAL_BASE =
+  "border-r border-b border-sheet-total-border bg-sheet-total text-sheet-total-fg text-center align-middle tracking-wide antialiased box-border overflow-hidden";
 const READONLY_CELL = `${CELL} text-muted-foreground bg-sheet-readonly`;
 const ROW_NUM_CELL = `${CELL} text-muted-foreground bg-sheet-readonly font-medium tabular-nums`;
 
@@ -168,6 +167,25 @@ function driverTypeShort(type?: string): string {
   if (type === "OO") return "O/O";
   if (type === "Lease") return "Lease";
   return "—";
+}
+
+function driverTypeBadgeClass(type?: string): string {
+  const base =
+    "inline-flex items-center justify-center min-w-[2.25rem] px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide border shadow-sm backdrop-blur-[2px]";
+  if (type === "OO") {
+    return `${base} bg-primary/12 text-primary border-primary/25 dark:bg-sky-500/20 dark:text-sky-200 dark:border-sky-400/35`;
+  }
+  if (type === "CD") {
+    return `${base} bg-success/12 text-success border-success/25 dark:bg-emerald-500/20 dark:text-emerald-200 dark:border-emerald-400/35`;
+  }
+  if (type === "Lease") {
+    return `${base} bg-accent/12 text-accent border-accent/25 dark:bg-accent/20 dark:text-accent dark:border-accent/40`;
+  }
+  return `${base} bg-muted/50 text-muted-foreground border-border/45 font-medium normal-case tracking-normal dark:bg-muted/30 dark:text-muted-foreground dark:border-border/50`;
+}
+
+function normalizeDriverId(driverId: string | null | undefined): string | null {
+  return driverId ?? null;
 }
 
 function isNewLoad(load: Load): boolean {
@@ -270,7 +288,7 @@ function SheetStatus({ status }: { status: LoadStatus | string }) {
   const { t } = useI18n();
   return (
     <span
-      className={`inline-block px-1.5 py-0.5 text-[10px] font-bold uppercase ${getSheetStatusClass(status)}`}
+      className={`inline-flex items-center justify-center max-w-full px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide border shadow-sm backdrop-blur-[2px] ${getSheetStatusClass(status)}`}
       title={translateLoadStatusDesc(t, status)}
     >
       {translateLoadStatus(t, status)}
@@ -305,6 +323,33 @@ function ReadOnlyMoneyCell({
   );
 }
 
+function SheetToolbarStat({
+  label,
+  value,
+  icon: Icon,
+  iconWrapClass,
+  labelClass,
+}: {
+  label: string;
+  value: string;
+  icon: typeof DollarSign;
+  iconWrapClass: string;
+  labelClass: string;
+}) {
+  return (
+    <div
+      className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border/70 bg-card px-2 shadow-sm"
+      title={`${label}: ${value}`}
+    >
+      <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${iconWrapClass}`}>
+        <Icon className="h-3.5 w-3.5" />
+      </div>
+      <span className={`text-[9px] font-bold uppercase tracking-wide ${labelClass}`}>{label}</span>
+      <span className="text-[11px] font-bold tabular-nums text-foreground">{value}</span>
+    </div>
+  );
+}
+
 interface LoadsSpreadsheetProps {
   loads: Load[];
   isLoading: boolean;
@@ -322,6 +367,7 @@ interface LoadsSpreadsheetProps {
   /** When filters/search are active, hide empty driver rows except the selected driver. */
   compactDriverGroups?: boolean;
   filterDriverId?: string;
+  dispatcherFilterId?: string;
 }
 
 export function LoadsSpreadsheet({
@@ -340,8 +386,20 @@ export function LoadsSpreadsheet({
   emptyMessage,
   compactDriverGroups = false,
   filterDriverId,
+  dispatcherFilterId,
 }: LoadsSpreadsheetProps) {
   const weekStart = weekStartProp ?? getThisWeekStart();
+  const kpiParams = useMemo(() => {
+    const mon = normalizeWeekStart(weekStart);
+    return {
+      weekStart: mon,
+      dateFrom: mon,
+      dateTo: weekEndFromStart(mon),
+      ...(dispatcherFilterId ? { dispatcherId: dispatcherFilterId } : {}),
+      ...(filterDriverId ? { driverId: filterDriverId } : {}),
+    };
+  }, [weekStart, dispatcherFilterId, filterDriverId]);
+  const { data: kpi, isLoading: kpiLoading } = useGetKpi(kpiParams);
   const { t, formatCurrency, formatNumber, formatDate } = useI18n();
   const qc = useQueryClient();
   const hiddenStorageKey = `lb_hidden_drivers_${weekStart}`;
@@ -441,21 +499,23 @@ export function LoadsSpreadsheet({
     const financialColCount = showFinancial ? COL_COUNT_FINANCIAL : 0;
     return scaleWidthsToContainer(baseEffectiveWidths, containerWidth, financialColCount);
   }, [baseEffectiveWidths, containerWidth, columnWidths, showFinancial]);
-  const tableMinWidth = Math.max(
-    baseEffectiveWidths.reduce((sum, w) => sum + w, 0),
-    containerWidth,
-  );
+  const tableMinWidth = useMemo(() => {
+    const sum = effectiveWidths.reduce((a, b) => a + b, 0);
+    if (columnWidths !== null) return Math.max(sum, containerWidth);
+    return containerWidth > 0 ? containerWidth : sum;
+  }, [effectiveWidths, containerWidth, columnWidths]);
 
   useEffect(() => {
     setColumnWidths(null);
   }, [wide, showFinancial, showRouteDetails]);
+  const sheetRowPad = wide ? SHEET_ROW_WIDE : SHEET_ROW_COMPACT;
+  const hdrCls = `${HDR_BASE} ${sheetRowPad}`;
   const cellCls = wide ? `${CELL} px-2.5 py-1.5 text-xs` : CELL;
-  const hdrCls = wide ? `${HDR} px-2.5 py-1.5 text-xs` : HDR;
   const groupCls = wide ? `${GROUP_CELL} px-2.5 py-1.5 text-xs` : GROUP_CELL;
   const readonlyCls = wide ? `${READONLY_CELL} px-2.5 py-1.5 text-xs` : READONLY_CELL;
-  const totalLabelCls = wide
-    ? "px-2.5 py-1.5 text-xs border-r border-b border-sheet-hdr-border bg-sheet-total text-sheet-total-fg font-semibold text-center align-middle whitespace-nowrap"
-    : TOTAL_LABEL_CELL;
+  const totalCellCls = `${TOTAL_BASE} ${sheetRowPad}`;
+  const totalMoneyCls = `${TOTAL_BASE} font-bold tabular-nums whitespace-nowrap ${sheetRowPad}`;
+  const totalLabelCls = `${TOTAL_BASE} font-bold uppercase whitespace-nowrap ${sheetRowPad}`;
   const visibleColCount = buildTotalsColumns(
     showRouteDetails,
     showFinancial,
@@ -691,27 +751,37 @@ export function LoadsSpreadsheet({
   }, [loads, wide, showFinancial, t, formatCurrency, formatNumber]);
 
   const reorderLoads = useCallback(
-    async (driverId: string | null, loadIds: string[]) => {
+    async (driverId: string | null | undefined, loadIds: string[]) => {
       try {
         const res = await fetch("/api/loads/reorder", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify({ driverId, loadIds }),
+          body: JSON.stringify({ driverId: normalizeDriverId(driverId), loadIds }),
         });
-        if (!res.ok) throw new Error("reorder failed");
+        if (!res.ok) {
+          const body = (await res.json().catch(() => null)) as { error?: string } | null;
+          throw new Error(body?.error ?? "reorder failed");
+        }
         void qc.invalidateQueries({ queryKey: ["/api/loads"] });
-      } catch {
-        toast.error(t("loads.sheet.reorderFailed"));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "";
+        const friendlyMessage =
+          message === "Forbidden" || message.includes("other dispatchers")
+            ? t("loads.sheet.reorderForbidden")
+            : message && message !== "reorder failed"
+              ? message
+              : t("loads.sheet.reorderFailed");
+        toast.error(friendlyMessage);
       }
     },
     [qc, t],
   );
 
   const handleRowDrop = useCallback(
-    (targetLoadId: string, groupDriverId: string | null, groupLoads: Load[]) => {
+    (targetLoadId: string, groupDriverId: string | null | undefined, groupLoads: Load[]) => {
       if (!draggingLoadId || draggingLoadId === targetLoadId) return;
-      if (dragDriverId !== groupDriverId) return;
+      if (normalizeDriverId(dragDriverId) !== normalizeDriverId(groupDriverId)) return;
 
       const ids = groupLoads.map((l) => l.id);
       const from = ids.indexOf(draggingLoadId);
@@ -857,38 +927,38 @@ export function LoadsSpreadsheet({
               </td>
             );
           }
-          return <td key={col} className={TOTAL_CELL} />;
+          return <td key={col} className={totalCellCls} />;
         })}
         {cols.slice(mileageIdx).map((col, i, rest) => {
           const isLast = i === rest.length - 1;
           switch (col) {
             case "mileage":
               return (
-                <td key={col} className={TOTAL_MONEY_CELL}>
+                <td key={col} className={totalMoneyCls}>
                   {formatNumber(totalMileage)}
                 </td>
               );
             case "rpm":
               return (
-                <td key={col} className={TOTAL_MONEY_CELL}>
+                <td key={col} className={totalMoneyCls}>
                   {avgRpm != null ? formatCurrency(avgRpm) : t("common.emDash")}
                 </td>
               );
             case "rate":
               return (
-                <td key={col} className={TOTAL_MONEY_CELL}>
+                <td key={col} className={totalMoneyCls}>
                   {formatCurrency(totalRate)}
                 </td>
               );
             case "reimb":
               return (
-                <td key={col} className={TOTAL_MONEY_CELL}>
+                <td key={col} className={totalMoneyCls}>
                   {totalReimb ? formatCurrency(totalReimb) : t("common.emDash")}
                 </td>
               );
             case "invoiced":
               return (
-                <td key={col} className={TOTAL_MONEY_CELL}>
+                <td key={col} className={totalMoneyCls}>
                   {hasFinancialTotals && totalInvoiced !== 0
                     ? formatCurrency(totalInvoiced)
                     : hasFinancialTotals
@@ -900,14 +970,14 @@ export function LoadsSpreadsheet({
               return (
                 <td
                   key={col}
-                  className={`${TOTAL_MONEY_CELL} ${totalIr < 0 ? "bg-red-700" : ""}`}
+                  className={`${totalMoneyCls} ${totalIr < 0 ? "text-red-200" : ""}`}
                 >
                   {hasFinancialTotals ? formatCurrency(totalIr) : t("common.emDash")}
                 </td>
               );
             case "brokerPaid":
               return (
-                <td key={col} className={TOTAL_MONEY_CELL}>
+                <td key={col} className={totalMoneyCls}>
                   {hasFinancialTotals && totalPaid !== 0
                     ? formatCurrency(totalPaid)
                     : hasFinancialTotals
@@ -919,7 +989,7 @@ export function LoadsSpreadsheet({
               return (
                 <td
                   key={col}
-                  className={`${TOTAL_MONEY_CELL} ${isLast ? "border-r-0" : ""} ${totalBi < 0 ? "bg-red-700" : ""}`}
+                  className={`${totalMoneyCls} ${isLast ? "border-r-0" : ""} ${totalBi < 0 ? "text-red-200" : ""}`}
                 >
                   {hasFinancialTotals ? formatCurrency(totalBi) : t("common.emDash")}
                 </td>
@@ -928,14 +998,14 @@ export function LoadsSpreadsheet({
               return (
                 <td
                   key={col}
-                  className={`${TOTAL_CELL} ${!showFinancial && isLast ? "border-r-0" : ""}`}
+                  className={`${totalCellCls} ${!showFinancial && isLast ? "border-r-0" : ""}`}
                 />
               );
             default:
               return (
                 <td
                   key={col}
-                  className={`${TOTAL_CELL} ${!showFinancial && isLast ? "border-r-0" : ""}`}
+                  className={`${totalCellCls} ${!showFinancial && isLast ? "border-r-0" : ""}`}
                 />
               );
           }
@@ -946,7 +1016,8 @@ export function LoadsSpreadsheet({
 
   return (
     <div className="flex flex-col min-h-0 h-full">
-      <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b border-border bg-muted/30 shrink-0">
+      <div className="flex items-center gap-2 px-2 py-1.5 border-b border-border/60 bg-muted/25 backdrop-blur-sm shrink-0">
+        <div className="flex shrink-0 items-center gap-2 min-w-0">
         {onWeekChange && onCreateWeek ? (
           <LoadsWeekToolbar
             weekStart={weekStart}
@@ -961,7 +1032,44 @@ export function LoadsSpreadsheet({
         ) : (
           <div />
         )}
-        <div className="flex items-center gap-2">
+        </div>
+
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5 overflow-hidden">
+          {isLoading || kpiLoading ? (
+            <Skeleton className="h-8 w-48 shrink-0 rounded-md" />
+          ) : (kpi?.totalLoads ?? 0) > 0 ? (
+            <>
+              <SheetToolbarStat
+                label={t("dashboard.totalGross")}
+                value={formatCurrency(kpi?.totalGross ?? 0)}
+                icon={DollarSign}
+                iconWrapClass="bg-sky-100 text-sky-600 dark:bg-sky-500/20 dark:text-sky-300"
+                labelClass="text-sky-700 dark:text-sky-300"
+              />
+              <SheetToolbarStat
+                label={t("dashboard.totalMiles")}
+                value={formatNumber(kpi?.totalMiles ?? 0)}
+                icon={Route}
+                iconWrapClass="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-300"
+                labelClass="text-violet-700 dark:text-violet-300"
+              />
+              <SheetToolbarStat
+                label={t("dashboard.avgRpm")}
+                value={formatCurrency(kpi?.avgRpm ?? 0)}
+                icon={TrendingUp}
+                iconWrapClass="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300"
+                labelClass="text-emerald-700 dark:text-emerald-300"
+              />
+              <SheetToolbarStat
+                label={t("dashboard.grossPerDriver")}
+                value={formatCurrency(kpi?.grossPerDriver ?? 0)}
+                icon={Divide}
+                iconWrapClass="bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300"
+                labelClass="text-amber-800 dark:text-amber-300"
+              />
+            </>
+          ) : null}
+        <div className="flex shrink-0 items-center gap-2">
         {(canToggleRouteDetails || canToggleFinancial) && (
           <Button
             type="button"
@@ -1000,10 +1108,16 @@ export function LoadsSpreadsheet({
           {t("loads.sheet.autoFit")}
         </Button>
         </div>
+        </div>
       </div>
-      <div ref={containerRef} className="flex-1 min-h-0 w-full overflow-auto">
+      <div
+        ref={containerRef}
+        className={`loads-sheet-scroll flex-1 min-h-0 w-full rounded-t-lg ${
+          columnWidths === null ? "overflow-y-auto overflow-x-hidden" : "overflow-auto"
+        }`}
+      >
       <table
-        className="w-full table-fixed border-collapse text-sm border border-border"
+        className="loads-sheet-table w-full table-fixed border-separate border-spacing-0 text-sm border border-sheet-hdr/80"
         style={{ minWidth: tableMinWidth }}
       >
         <colgroup>
@@ -1100,12 +1214,14 @@ export function LoadsSpreadsheet({
               <>
                 <td
                   rowSpan={rowSpan}
-                  className={`${groupCls} text-center`}
+                  className={`${groupCls} align-middle`}
                   title={driverTypeShort(group.driver?.driverType)}
                 >
-                  {driverTypeShort(group.driver?.driverType)}
+                  <span className={driverTypeBadgeClass(group.driver?.driverType)}>
+                    {driverTypeShort(group.driver?.driverType)}
+                  </span>
                 </td>
-                <td rowSpan={rowSpan} className={groupCls} title={group.driver?.fullName ?? t("loads.sheet.unassigned")}>
+                <td rowSpan={rowSpan} className={`${groupCls} font-semibold whitespace-nowrap`} title={group.driver?.fullName ?? t("loads.sheet.unassigned")}>
                   <ContextMenu>
                     <ContextMenuTrigger
                       asChild
@@ -1125,10 +1241,10 @@ export function LoadsSpreadsheet({
                                   : t("loads.sheet.addRow")
                               }
                               disabled={!!activeDraftLoadId}
-                              className={`w-5 h-5 flex items-center justify-center text-sm font-bold leading-none ${
+                              className={`inline-flex items-center justify-center w-6 h-6 rounded-md border transition-all duration-150 shadow-sm ${
                                 activeDraftLoadId
-                                  ? "bg-muted text-muted-foreground cursor-not-allowed opacity-50"
-                                  : "bg-accent text-accent-foreground hover:bg-accent/90"
+                                  ? "border-border/40 bg-muted/40 text-muted-foreground cursor-not-allowed opacity-50"
+                                  : "border-primary/30 bg-white/55 text-primary hover:bg-primary hover:text-primary-foreground hover:border-primary hover:shadow-md backdrop-blur-sm active:scale-95 dark:border-accent/45 dark:bg-accent/20 dark:text-accent dark:hover:bg-accent dark:hover:text-accent-foreground dark:hover:border-accent"
                               }`}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1136,7 +1252,7 @@ export function LoadsSpreadsheet({
                               }}
                               data-testid={`add-load-row-${group.driverId ?? "unassigned"}`}
                             >
-                              +
+                              <Plus className="h-3.5 w-3.5" strokeWidth={2.5} />
                             </button>
                           )}
                         </div>
@@ -1381,7 +1497,7 @@ export function LoadsSpreadsheet({
                           isNewLoad(load) && load.rate === 0 ? (
                             t("common.emDash")
                           ) : (
-                            <span className="font-semibold">{formatCurrency(load.rate)}</span>
+                            <span className="font-bold text-sheet-rate">{formatCurrency(load.rate)}</span>
                           )
                         }
                         tooltip={

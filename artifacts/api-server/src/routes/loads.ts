@@ -12,6 +12,18 @@ import {
 
 const router = Router();
 
+function sortLoadsBySortOrder<T extends { sortOrder?: number | null; createdAt?: Date | string | null }>(
+  loads: T[],
+): T[] {
+  return [...loads].sort((a, b) => {
+    const orderDiff = (a.sortOrder ?? 0) - (b.sortOrder ?? 0);
+    if (orderDiff !== 0) return orderDiff;
+    const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return aTime - bTime;
+  });
+}
+
 function computeDiffs(load: typeof loadsTable.$inferSelect) {
   const rate = Number(load.rate);
   const reimb = Number(load.reimbursement);
@@ -229,12 +241,32 @@ router.post("/reorder", requireAuth, requireRole("admin", "dispatcher"), async (
       res.status(400).json({ error: "Loads must belong to the same driver" });
       return;
     }
-    if (req.userRole === "dispatcher" && row.dispatcherId !== req.userId) {
-      res.status(403).json({ error: "Forbidden" });
+  }
+
+  if (req.userRole === "dispatcher") {
+    const rowById = new Map(rows.map((row) => [row.id, row]));
+    const isOwned = (id: string) => rowById.get(id)?.dispatcherId === req.userId;
+    const prevOrder = sortLoadsBySortOrder(rows).map((row) => row.id);
+    const prevOthers = prevOrder.filter((id) => !isOwned(id));
+    const newOthers = loadIds.filter((id) => !isOwned(id));
+
+    if (
+      prevOthers.length !== newOthers.length
+      || prevOthers.some((id, index) => id !== newOthers[index])
+    ) {
+      res.status(403).json({ error: "Cannot reorder other dispatchers' loads" });
       return;
     }
-    if (req.userRole === "dispatcher" && isLoadDispatcherLocked(row.status)) {
-      res.status(403).json({ error: "Load is locked for accounting review" });
+
+    const prevOwn = prevOrder.filter(isOwned);
+    const newOwn = loadIds.filter(isOwned);
+    if (prevOwn.length !== newOwn.length) {
+      res.status(400).json({ error: "Invalid load ids" });
+      return;
+    }
+
+    if (prevOwn.length === 0) {
+      res.status(403).json({ error: "Cannot reorder other dispatchers' loads" });
       return;
     }
   }

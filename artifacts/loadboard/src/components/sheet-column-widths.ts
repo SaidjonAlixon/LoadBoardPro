@@ -3,7 +3,10 @@ import { translateLoadStatus } from "@/lib/i18n/translate";
 import { toCityState } from "@/components/sheet-editable-cell";
 
 const HDR_FONT = "bold 10px Inter, sans-serif";
+const HDR_FONT_WIDE = "bold 12px Inter, sans-serif";
 const CELL_FONT = "11px Inter, sans-serif";
+const HDR_PAD = 32;
+const HDR_PAD_WIDE = 40;
 
 type TFn = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -37,7 +40,7 @@ export function filterVisibleWidths(
   });
 }
 
-/** Stretch columns proportionally when the table is narrower than its container. */
+/** Scale columns to exactly fill the container (shrink or grow). */
 export function scaleWidthsToContainer(
   widths: number[],
   containerWidth: number,
@@ -45,7 +48,18 @@ export function scaleWidthsToContainer(
 ): number[] {
   if (containerWidth <= 0) return widths;
   const sum = widths.reduce((a, b) => a + b, 0);
-  if (sum >= containerWidth) return widths;
+  if (sum === 0) return widths;
+  if (sum === containerWidth) return [...widths];
+
+  if (sum > containerWidth) {
+    const factor = containerWidth / sum;
+    const result = widths.map((w) => Math.max(24, Math.round(w * factor)));
+    const drift = containerWidth - result.reduce((a, b) => a + b, 0);
+    if (drift !== 0 && result.length > 0) {
+      result[result.length - 1] = Math.max(24, result[result.length - 1] + drift);
+    }
+    return result;
+  }
 
   const extra = containerWidth - sum;
   const result = [...widths];
@@ -78,6 +92,12 @@ export function scaleWidthsToContainer(
   return result;
 }
 
+function headerMinWidth(label: string, wide: boolean): number {
+  const font = wide ? HDR_FONT_WIDE : HDR_FONT;
+  const pad = wide ? HDR_PAD_WIDE : HDR_PAD;
+  return Math.ceil(textWidth(label, font)) + pad;
+}
+
 export function getDefaultSheetWidths(wide: boolean, showFinancial: boolean): number[] {
   const w = wide;
   const base = [
@@ -94,13 +114,18 @@ export function getDefaultSheetWidths(wide: boolean, showFinancial: boolean): nu
     w ? 75 : 70,
     w ? 95 : 90,
     w ? 120 : 110,
-    w ? 85 : 75,
-    w ? 180 : 120,
+    Math.max(w ? 152 : 138, headerMinWidth("REIMBURSEMENT", w)),
+    Math.max(w ? 160 : 132, headerMinWidth("DISPATCH NOTES", w)),
     92,
     36,
   ];
   if (showFinancial) {
-    base.push(110, 100, 110, 100);
+    base.push(
+      Math.max(w ? 158 : 142, headerMinWidth("INVOICED AMOUNT", w)),
+      Math.max(w ? 108 : 96, headerMinWidth("I - R+R", w)),
+      w ? 110 : 100,
+      w ? 100 : 92,
+    );
   }
   return base;
 }
@@ -116,9 +141,9 @@ function driverTypeShort(type?: string): string {
   return "—";
 }
 
-function fitWidth(texts: string[], min: number, max: number, font = CELL_FONT): number {
+function fitWidth(texts: string[], min: number, max: number, font = CELL_FONT, pad = 28): number {
   const maxText = Math.max(...texts.filter(Boolean).map((txt) => textWidth(txt, font)), 0);
-  return Math.min(max, Math.max(min, Math.ceil(maxText) + 28));
+  return Math.min(max, Math.max(min, Math.ceil(maxText) + pad));
 }
 
 export function computeAutoFitWidths(
@@ -190,9 +215,18 @@ export function computeAutoFitWidths(
   const widths = colTexts.map((texts, i) => {
     if (i === 16) return 36;
     const max = i === 14 ? 360 : i === 2 ? 220 : 260;
-    const min = i === 0 ? 36 : i === 1 ? 48 : 56;
-    const font = i <= 15 ? HDR_FONT : CELL_FONT;
-    return fitWidth(texts, min, max, font);
+    const hdrPad = wide ? HDR_PAD_WIDE : HDR_PAD;
+    const hdrFont = wide ? HDR_FONT_WIDE : HDR_FONT;
+    const min =
+      i === 0 ? 36
+      : i === 1 ? 48
+      : i === 13 ? headerMinWidth(t("loads.sheet.reimbursement"), wide)
+      : i === 14 ? headerMinWidth(t("loads.sheet.dispatchNotes"), wide)
+      : i === 17 && showFinancial ? headerMinWidth(t("loads.sheet.invoicedAmount"), wide)
+      : 56;
+    const font = i <= 15 || (showFinancial && i >= 17) ? hdrFont : CELL_FONT;
+    const pad = i <= 15 || (showFinancial && i >= 17) ? hdrPad : 28;
+    return fitWidth(texts, min, max, font, pad);
   });
 
   return widths;

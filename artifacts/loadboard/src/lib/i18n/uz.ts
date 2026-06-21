@@ -358,7 +358,10 @@ const uz = {
       resizeColumn: "Ustun kengligini torting",
       dragRow: "Shu haydovchi ichida tartiblash uchun torting",
       reorderFailed: "Yuklar tartibini o'zgartirib bo'lmadi",
+      reorderForbidden: "Faqat o'zingizning yuklaringiz tartibini o'zgartira olasiz",
       lockedByAccounting: "Qulflangan — buxgalter yukni tekshirmoqda",
+      avgRate: "O'RTACHA RPM",
+      totalReimbShort: "JAMI KOMP.",
     },
   },
 

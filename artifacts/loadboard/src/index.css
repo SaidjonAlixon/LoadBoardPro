@@ -67,9 +67,11 @@
   --color-sheet-edit: hsl(var(--sheet-edit));
   --color-sheet-total: hsl(var(--sheet-total));
   --color-sheet-total-fg: hsl(var(--sheet-total-fg));
+  --color-sheet-total-border: hsl(var(--sheet-total-border));
   --color-sheet-cell-alt: hsl(var(--sheet-cell-alt));
   --color-sheet-group: hsl(var(--sheet-group));
   --color-sheet-load-id: hsl(var(--sheet-load-id));
+  --color-sheet-rate: hsl(var(--sheet-rate));
 
   --font-sans: var(--app-font-sans);
   --font-serif: var(--app-font-serif);
@@ -171,20 +173,22 @@
   --chart-4: 0 66% 47%;
   --chart-5: 210 57% 24%;
 
-  /* Spreadsheet */
-  --sheet-hdr: 210 57% 24%;
+  /* Spreadsheet — sharp header/totals + glass body */
+  --sheet-hdr: 212 52% 17%;
   --sheet-hdr-fg: 0 0% 100%;
-  --sheet-hdr-border: 210 57% 30%;
-  --sheet-cell: 0 0% 100%;
+  --sheet-hdr-border: 0 0% 100% / 0.14;
+  --sheet-cell: 0 0% 100% / 0.58;
   --sheet-cell-fg: 210 57% 15%;
-  --sheet-border: 214 20% 82%;
-  --sheet-readonly: 210 20% 98%;
-  --sheet-edit: 214 90% 95%;
-  --sheet-total: 210 57% 24%;
+  --sheet-border: 214 25% 82% / 0.5;
+  --sheet-readonly: 210 25% 97% / 0.52;
+  --sheet-edit: 214 90% 95% / 0.72;
+  --sheet-total: 214 38% 42%;
   --sheet-total-fg: 0 0% 100%;
-  --sheet-cell-alt: 210 30% 97%;
-  --sheet-group: 214 45% 96%;
-  --sheet-load-id: 210 57% 24%;
+  --sheet-total-border: 0 0% 100% / 0.16;
+  --sheet-cell-alt: 210 40% 96% / 0.45;
+  --sheet-group: 214 45% 96% / 0.68;
+  --sheet-load-id: 212 52% 17%;
+  --sheet-rate: 207 90% 54%;
 
   --app-font-sans: 'Inter', sans-serif;
   --app-font-serif: Georgia, serif;
@@ -269,19 +273,21 @@
   --chart-4: 0 66% 47%;
   --chart-5: 210 57% 40%;
 
-  --sheet-hdr: 207 80% 38%;
+  --sheet-hdr: 212 48% 22%;
   --sheet-hdr-fg: 0 0% 100%;
-  --sheet-hdr-border: 207 85% 48%;
-  --sheet-cell: 210 40% 19%;
+  --sheet-hdr-border: 0 0% 100% / 0.12;
+  --sheet-cell: 210 40% 19% / 0.72;
   --sheet-cell-fg: 210 25% 96%;
-  --sheet-border: 210 35% 34%;
-  --sheet-readonly: 210 38% 15%;
-  --sheet-edit: 207 55% 28%;
-  --sheet-total: 207 75% 32%;
+  --sheet-border: 210 35% 34% / 0.55;
+  --sheet-readonly: 210 38% 15% / 0.65;
+  --sheet-edit: 207 55% 28% / 0.75;
+  --sheet-total: 214 32% 36%;
   --sheet-total-fg: 0 0% 100%;
-  --sheet-cell-alt: 210 42% 15%;
-  --sheet-group: 210 48% 24%;
+  --sheet-total-border: 0 0% 100% / 0.14;
+  --sheet-cell-alt: 210 42% 15% / 0.58;
+  --sheet-group: 210 40% 19% / 0.72;
   --sheet-load-id: 199 95% 72%;
+  --sheet-rate: 207 90% 62%;
 }
 
 @layer base {
@@ -364,7 +370,59 @@
     inset: -1px;
   }
 
-  /* Loads spreadsheet: zebra rows + totals separator */
+  .btn-export-excel {
+    border: 0 !important;
+    color: white;
+    font-weight: 600;
+    background: linear-gradient(90deg, #3b82f6 0%, #22d3ee 100%);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+  }
+
+  .btn-export-excel:hover:not(:disabled) {
+    background: linear-gradient(90deg, #2563eb 0%, #06b6d4 100%);
+  }
+
+  .btn-export-excel svg {
+    color: white;
+  }
+
+  /* Loads spreadsheet: glass surface, zebra rows, totals */
+  .loads-sheet-scroll {
+    background:
+      linear-gradient(
+        165deg,
+        hsl(var(--sheet-readonly) / 0.35) 0%,
+        hsl(var(--sheet-cell-alt) / 0.22) 45%,
+        hsl(var(--sheet-group) / 0.28) 100%
+      );
+  }
+
+  .loads-sheet-table thead th,
+  .loads-sheet-table tr.sheet-totals-row > td {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .loads-sheet-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    background-color: hsl(var(--sheet-hdr));
+  }
+
+  .loads-sheet-table thead tr th:first-child {
+    border-top-left-radius: var(--radius);
+  }
+
+  .loads-sheet-table thead tr th:last-child {
+    border-top-right-radius: var(--radius);
+  }
+
+  .loads-sheet-table tbody td {
+    -webkit-backdrop-filter: blur(3px);
+    backdrop-filter: blur(3px);
+  }
+
   tr.sheet-row-alt > td {
     background-color: hsl(var(--sheet-cell-alt));
   }
@@ -374,8 +432,19 @@
     background-color: hsl(var(--sheet-readonly));
   }
 
+  .dark tr.sheet-row-alt > td[class*="bg-sheet-group"] {
+    background-color: hsl(var(--sheet-cell-alt));
+  }
+
+  .dark tr:not(.sheet-row-alt) > td[class*="bg-sheet-group"] {
+    background-color: hsl(var(--sheet-cell));
+  }
+
   tr.sheet-totals-row > td {
-    border-top: 2px solid hsl(var(--sheet-hdr-border));
+    border-top: 1px solid hsl(var(--sheet-total-border));
+    box-sizing: border-box;
+    vertical-align: middle;
+    line-height: 1.25;
   }
 
   tr.sheet-row-locked > td {

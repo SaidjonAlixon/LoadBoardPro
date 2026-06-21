@@ -984,9 +984,8 @@ export default function LoadsList() {
             )}
           </Button>
           <Button
-            variant="outline"
             size="sm"
-            className="h-9 border-border shadow-sm gap-1.5 text-accent"
+            className="btn-export-excel no-default-hover-elevate h-9 gap-1.5"
             onClick={() => void handleExportExcel()}
             disabled={exporting}
           >
@@ -1005,7 +1004,7 @@ export default function LoadsList() {
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden border border-border bg-card min-h-0 w-full">
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 min-h-0 overflow-hidden">
           <LoadsSpreadsheet
             loads={loadsData?.data ?? []}
             isLoading={isLoading}
@@ -1021,6 +1020,7 @@ export default function LoadsList() {
             onAddLoad={() => setAddOpen(true)}
             compactDriverGroups={compactDriverGroups}
             filterDriverId={filters.driverId || undefined}
+            dispatcherFilterId={canFilterDispatchers ? filters.dispatcherId || undefined : undefined}
             emptyMessage={{
               title: t("loads.noLoads"),
               subtitle:

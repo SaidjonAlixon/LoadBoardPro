@@ -358,7 +358,10 @@ const en = {
       resizeColumn: "Drag to resize column",
       dragRow: "Drag to reorder within this driver",
       reorderFailed: "Failed to reorder loads",
+      reorderForbidden: "You can only reorder your own loads",
       lockedByAccounting: "Locked — accounting is reviewing this load",
+      avgRate: "AVG RATE",
+      totalReimbShort: "TOTAL REIMB.",
     },
   },
 

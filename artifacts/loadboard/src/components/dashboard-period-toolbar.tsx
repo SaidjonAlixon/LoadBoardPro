@@ -157,9 +157,8 @@ export function DashboardPeriodToolbar({
           </Button>
           <Button
             type="button"
-            variant="outline"
             size="sm"
-            className="h-9 gap-1.5 border-border text-accent"
+            className="btn-export-excel no-default-hover-elevate h-9 gap-1.5"
             onClick={onExport}
             disabled={exporting}
           >

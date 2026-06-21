@@ -34,28 +34,28 @@ function normalizeLoadStatus(status: string): string {
 export function getSheetStatusClass(status: string): string {
   switch (normalizeLoadStatus(status)) {
     case "Booked":
-      return "bg-[#90caf9] text-[#0d47a1]";
+      return "bg-[#E3F2FD]/78 text-[#1565C0] border-[#BBDEFB]/85";
     case "InQM":
-      return "bg-[#fff59d] text-[#f57f17]";
+      return "bg-[#FFF3E0]/80 text-[#E65100] border-[#FFE0B2]/85";
     case "Delivered":
-      return "bg-[#a5d6a7] text-[#1b5e20]";
+      return "bg-[#E8F5E9]/78 text-[#2E7D32] border-[#C8E6C9]/85";
     case "Canceled":
-      return "bg-[#ef9a9a] text-[#b71c1c]";
+      return "bg-[#FFEBEE]/78 text-[#C62828] border-[#FFCDD2]/85";
     case "Completed":
-      return "bg-[#80cbc4] text-[#004d40]";
+      return "bg-[#E0F2F1]/78 text-[#00695C] border-[#B2DFDB]/85";
     case "NeedRevRC":
-      return "bg-[#ce93d8] text-[#4a148c]";
+      return "bg-[#F3E5F5]/78 text-[#6A1B9A] border-[#E1BEE7]/85";
     case "Issue":
-      return "bg-[#ffcc80] text-[#e65100]";
+      return "bg-[#FFF8E1]/80 text-[#F57F17] border-[#FFECB3]/85";
     case "Checked":
-      return "bg-[#80deea] text-[#006064]";
+      return "bg-[#E0F7FA]/78 text-[#006064] border-[#B2EBF2]/85";
     case "Invoiced":
-      return "bg-[#9fa8da] text-[#1a237e]";
+      return "bg-[#E8EAF6]/78 text-[#283593] border-[#C5CAE9]/85";
     case "Reinvoiced":
-      return "bg-[#ffcc80] text-[#e65100]";
+      return "bg-[#FFF3E0]/80 text-[#E65100] border-[#FFE0B2]/85";
     case "BrokerPaid":
-      return "bg-[#81c784] text-[#1b5e20]";
+      return "bg-[#E8F5E9]/78 text-[#1B5E20] border-[#A5D6A7]/85";
     default:
-      return "bg-gray-200 text-foreground";
+      return "bg-muted/70 text-foreground border-border/60";
   }
 }
