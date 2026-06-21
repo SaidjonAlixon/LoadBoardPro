@@ -11,7 +11,8 @@ import { useQueryClient } from "@tanstack/react-query";
 
 export interface AuthUser {
   id: string;
-  email: string;
+  nickname?: string | null;
+  email?: string | null;
   name: string | null;
   role: string;
   isActive: boolean;
@@ -21,7 +22,7 @@ export interface AuthUser {
 interface AuthContextValue {
   user: AuthUser | null;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (login: string, password: string) => Promise<void>;
   register: (email: string, password: string, name?: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -65,16 +66,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(
-    async (email: string, password: string) => {
+    async (loginId: string, password: string) => {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ login: loginId, password }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? "Login failed");
+        throw new Error((data as { error?: string }).error ?? "Login failed");
       }
       const data = await res.json();
       setUser(data);

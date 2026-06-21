@@ -6,8 +6,15 @@ export const userRoleEnum = pgEnum("user_role", ["admin", "dispatcher", "account
 
 export const usersTable = pgTable("users", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-  email: text("email").notNull().unique(),
+  /** Login handle (nickname) — unique identifier for sign-in */
+  nickname: text("nickname").unique(),
+  /** Legacy / optional contact email */
+  email: text("email"),
   passwordHash: text("password_hash").notNull(),
+  /** AES-GCM encrypted plaintext — admin-only retrieval for dispatcher handoff */
+  passwordEncrypted: text("password_encrypted"),
+  /** When true, password was set manually and cannot be re-derived */
+  usesCustomPassword: boolean("uses_custom_password").notNull().default(false),
   name: text("name"),
   avatarKey: text("avatar_key"),
   role: userRoleEnum("role").notNull().default("dispatcher"),

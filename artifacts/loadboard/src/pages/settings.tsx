@@ -15,6 +15,19 @@ import { UserAvatar } from "@/components/user-avatar";
 import { getAvatarUrl, getRoleAvatarKeys } from "@/lib/profile-avatars";
 import { cn } from "@/lib/utils";
 
+function userLogin(user?: { nickname?: string | null; email?: string | null } | null): string {
+  const raw = user?.nickname ?? user?.email ?? "";
+  if (!raw) return "";
+  if (user?.nickname) return user.nickname;
+  if (raw.includes("@")) return raw.split("@")[0]!.toLowerCase();
+  return raw.toLowerCase();
+}
+
+function userLoginLabel(user?: { nickname?: string | null; email?: string | null } | null): string {
+  const login = userLogin(user);
+  return login ? `@${login}` : "";
+}
+
 const ROLE_COLORS: Record<string, string> = {
   admin: "bg-purple-500/15 text-purple-300 border-purple-500/30",
   dispatcher: "bg-blue-500/15 text-blue-300 border-blue-500/30",
@@ -60,6 +73,8 @@ export default function Settings() {
 
   const role = me?.role ?? "dispatcher";
   const avatarOptions = getRoleAvatarKeys(role);
+  const login = userLogin(me as { nickname?: string | null; email?: string | null });
+  const loginLabel = userLoginLabel(me as { nickname?: string | null; email?: string | null });
 
   return (
     <div className="max-w-6xl mx-auto flex flex-col gap-4">
@@ -80,7 +95,7 @@ export default function Settings() {
               <div className="rounded-xl border border-border bg-muted/20 p-5 sm:p-6 flex flex-col items-center text-center">
                 <UserAvatar
                   name={name || me?.name}
-                  email={me?.email}
+                  email={login || me?.email}
                   avatarKey={me?.avatarKey}
                   className="h-24 w-24 border-4 border-primary/30 shadow-lg"
                   fallbackClassName="text-3xl font-semibold"
@@ -90,10 +105,10 @@ export default function Settings() {
                     <Skeleton className="h-5 w-36 mx-auto" />
                   ) : (
                     <p className="font-bold text-lg text-foreground truncate">
-                      {me?.name || me?.email || t("common.emDash")}
+                      {me?.name || loginLabel || t("common.emDash")}
                     </p>
                   )}
-                  <p className="text-sm text-muted-foreground truncate">{me?.email}</p>
+                  <p className="text-sm font-mono text-accent truncate">{loginLabel || t("common.emDash")}</p>
                   <Badge variant="outline" className={`mt-2 text-xs ${ROLE_COLORS[role] || ""}`}>
                     {translateRole(t, role)}
                   </Badge>
@@ -176,11 +191,11 @@ export default function Settings() {
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-1.5">
-                      <Label className="text-xs font-medium">{t("settings.email")}</Label>
+                      <Label className="text-xs font-medium">{t("settings.nickname")}</Label>
                       <Input
-                        value={me?.email ?? ""}
+                        value={loginLabel || login || ""}
                         disabled
-                        className="h-10 bg-muted/40 border-border text-muted-foreground text-sm"
+                        className="h-10 bg-muted/40 border-border text-muted-foreground text-sm font-mono"
                       />
                     </div>
                     <div className="space-y-1.5">
@@ -194,7 +209,7 @@ export default function Settings() {
                   </div>
 
                   <div className="rounded-lg border border-border bg-muted/20 px-4 py-3 space-y-2 text-xs text-muted-foreground">
-                    <p>{t("settings.emailHint")}</p>
+                    <p>{t("settings.nicknameHint")}</p>
                     <p>{t("settings.roleHint")}</p>
                   </div>
 

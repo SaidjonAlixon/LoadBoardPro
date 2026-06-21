@@ -26,8 +26,9 @@ import {
 } from "@/components/ui/select";
 import {
   ShieldCheck, UserPlus, Users, Pencil, CheckCircle, XCircle,
-  Search, RefreshCw, Crown, Calculator, Truck, UserCog, Trash2,
+  Search, RefreshCw, Crown, Calculator, Truck, UserCog, Trash2, Copy, Eye, EyeOff,
 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import { Link } from "wouter";
 import { useI18n } from "@/lib/i18n";
 import { translateRole } from "@/lib/i18n/translate";
@@ -54,10 +55,149 @@ const ROLE_STAT_KEYS: Record<string, string> = {
   driver: "admin.drivers",
 };
 
+function PasswordInput({
+  id,
+  value,
+  onChange,
+  placeholder,
+  t,
+}: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  t: (key: string) => string;
+}) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div className="relative">
+      <Input
+        id={id}
+        type={visible ? "text" : "password"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoComplete="new-password"
+        className="pr-10"
+      />
+      <button
+        type="button"
+        onClick={() => setVisible((v) => !v)}
+        className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        aria-label={visible ? t("auth.hidePassword") : t("auth.showPassword")}
+      >
+        {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+      </button>
+    </div>
+  );
+}
+
+type AdminUser = {
+  id: string;
+  nickname?: string | null;
+  email?: string | null;
+  name?: string | null;
+  role: string;
+  isActive: boolean;
+  usesCustomPassword?: boolean;
+  createdAt?: string;
+};
+
+type CredentialsView = {
+  nickname: string;
+  password: string | null;
+  usesCustomPassword?: boolean;
+  canReveal?: boolean;
+};
+
+function loginHandle(user: AdminUser): string {
+  const raw = (user.nickname ?? user.email ?? "").trim().replace(/^@+/, "");
+  if (!raw) return "";
+  if (user.nickname) return user.nickname.toLowerCase();
+  if (raw.includes("@")) return raw.split("@")[0]!.toLowerCase();
+  return raw.toLowerCase();
+}
+
+function loginLabel(user: AdminUser): string {
+  const handle = loginHandle(user);
+  return handle ? `@${handle}` : "—";
+}
+
+/** @deprecated use loginHandle */
+function userLogin(user: AdminUser): string {
+  return loginHandle(user);
+}
+
+function normalizeCredentialNickname(value: string): string {
+  const raw = value.trim().replace(/^@+/, "");
+  if (raw.includes("@")) return raw.split("@")[0]!.toLowerCase();
+  return raw.toLowerCase();
+}
+
+function CredentialsPanel({
+  credentials,
+  t,
+  onCopy,
+}: {
+  credentials: CredentialsView;
+  t: (key: string) => string;
+  onCopy: () => void;
+}) {
+  const nickname = normalizeCredentialNickname(credentials.nickname);
+  return (
+    <div className="rounded-xl border border-emerald-200/80 bg-emerald-50/80 dark:bg-emerald-950/25 dark:border-emerald-800/60 p-4 space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="rounded-lg bg-white/70 dark:bg-background/40 border border-emerald-100 dark:border-emerald-900/40 px-3 py-2.5">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-1">
+            {t("admin.nickname")}
+          </p>
+          <p className="font-mono text-sm font-semibold text-foreground break-all">
+            {nickname ? `@${nickname}` : t("common.emDash")}
+          </p>
+        </div>
+        <div className="rounded-lg bg-white/70 dark:bg-background/40 border border-emerald-100 dark:border-emerald-900/40 px-3 py-2.5">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-1">
+            {t("admin.generatedPassword")}
+          </p>
+          {credentials.password ? (
+            <p className="font-mono text-sm font-bold text-foreground break-all">{credentials.password}</p>
+          ) : (
+            <p className="text-xs text-muted-foreground leading-snug">{t("admin.customPasswordHidden")}</p>
+          )}
+        </div>
+      </div>
+      {credentials.password && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="gap-1.5 border-emerald-300/70 bg-white/80 hover:bg-white dark:bg-background/50"
+          onClick={() => void onCopy()}
+        >
+          <Copy className="h-3.5 w-3.5" /> {t("admin.copyCredentials")}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+async function copyLoginCredentials(
+  t: (key: string, vars?: Record<string, string | number>) => string,
+  nickname: string,
+  password: string | null,
+) {
+  const handle = normalizeCredentialNickname(nickname);
+  const text = password
+    ? `${t("admin.nickname")}: ${handle}\n${t("admin.generatedPassword")}: ${password}`
+    : `${t("admin.nickname")}: ${handle}`;
+  await navigator.clipboard.writeText(text);
+  toast.success(t("admin.credentialsCopied"));
+}
+
 function CreateUserModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { t } = useI18n();
-  const [form, setForm] = useState({ email: "", firstName: "", lastName: "", role: "dispatcher" });
-  const [created, setCreated] = useState<{ email: string; password: string; name: string } | null>(null);
+  const [form, setForm] = useState({ nickname: "", firstName: "", lastName: "", role: "dispatcher", password: "" });
+  const [created, setCreated] = useState<{ nickname: string; password: string; name: string } | null>(null);
   const qc = useQueryClient();
 
   const mutation = useMutation({
@@ -66,26 +206,32 @@ function CreateUserModal({ open, onClose }: { open: boolean; onClose: () => void
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          nickname: form.nickname,
+          firstName: form.firstName,
+          lastName: form.lastName,
+          role: form.role,
+          password: form.password.trim() || undefined,
+        }),
       });
       const text = await res.text();
-      let data: { error?: string; generatedPassword?: string; user?: { email: string; name: string | null } } = {};
+      let data: { error?: string; generatedPassword?: string; user?: { nickname?: string; name: string | null } } = {};
       try {
         data = text ? JSON.parse(text) : {};
       } catch {
         data = { error: text.slice(0, 200) || "Failed" };
       }
       if (!res.ok) throw new Error(data.error || t("admin.createFailed"));
-      return data as { user: { email: string; name: string | null }; generatedPassword: string };
+      return data as { user: { nickname?: string; name: string | null }; generatedPassword: string };
     },
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["/api/users"] });
       setCreated({
-        email: data.user.email,
+        nickname: data.user.nickname ?? form.nickname,
         password: data.generatedPassword,
         name: data.user.name || `${form.firstName} ${form.lastName}`.trim(),
       });
-      setForm({ email: "", firstName: "", lastName: "", role: "dispatcher" });
+      setForm({ nickname: "", firstName: "", lastName: "", role: "dispatcher", password: "" });
     },
   });
 
@@ -93,12 +239,6 @@ function CreateUserModal({ open, onClose }: { open: boolean; onClose: () => void
     setCreated(null);
     mutation.reset();
     onClose();
-  };
-
-  const copyCredentials = async () => {
-    if (!created) return;
-    const text = `${t("admin.email")}: ${created.email}\n${t("admin.generatedPassword")}: ${created.password}`;
-    await navigator.clipboard.writeText(text);
   };
 
   return (
@@ -118,19 +258,16 @@ function CreateUserModal({ open, onClose }: { open: boolean; onClose: () => void
                   <p className="text-xs text-muted-foreground uppercase tracking-wide">{t("common.user")}</p>
                   <p className="font-semibold text-foreground">{created.name}</p>
                 </div>
-                <div>
-                  <p className="text-xs text-muted-foreground uppercase tracking-wide">{t("admin.email")}</p>
-                  <p className="font-mono text-foreground break-all">{created.email}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground uppercase tracking-wide">{t("admin.generatedPassword")}</p>
-                  <p className="font-mono font-bold text-accent break-all">{created.password}</p>
-                </div>
+                <CredentialsPanel
+                  credentials={{ nickname: created.nickname, password: created.password }}
+                  t={t}
+                  onCopy={() => copyLoginCredentials(t, created.nickname, created.password)}
+                />
               </div>
             </div>
             <DialogFooter className="gap-2 sm:gap-0">
-              <Button variant="outline" onClick={() => void copyCredentials()}>
-                {t("admin.copyCredentials")}
+              <Button variant="outline" onClick={() => void copyLoginCredentials(t, created.nickname, created.password)}>
+                <Copy className="h-3.5 w-3.5 mr-1.5" /> {t("admin.copyCredentials")}
               </Button>
               <Button className="bg-primary hover:bg-primary/90 text-white" onClick={handleClose}>
                 {t("common.done")}
@@ -166,15 +303,26 @@ function CreateUserModal({ open, onClose }: { open: boolean; onClose: () => void
                 </div>
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="cu-email">{t("admin.gmail")} <span className="text-red-500">*</span></Label>
+                <Label htmlFor="cu-nickname">{t("admin.nickname")} <span className="text-red-500">*</span></Label>
                 <Input
-                  id="cu-email"
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-                  placeholder={t("admin.gmailPh")}
+                  id="cu-nickname"
+                  value={form.nickname}
+                  onChange={(e) => setForm((f) => ({ ...f, nickname: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "") }))}
+                  placeholder={t("admin.nicknamePh")}
+                  autoComplete="off"
                   required
                 />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="cu-password">{t("admin.customPassword")}</Label>
+                <PasswordInput
+                  id="cu-password"
+                  value={form.password}
+                  onChange={(password) => setForm((f) => ({ ...f, password }))}
+                  placeholder={t("admin.customPasswordPh")}
+                  t={t}
+                />
+                <p className="text-[11px] text-muted-foreground">{t("admin.customPasswordHint")}</p>
               </div>
               <div className="space-y-1.5">
                 <Label>{t("admin.role")} <span className="text-red-500">*</span></Label>
@@ -193,8 +341,8 @@ function CreateUserModal({ open, onClose }: { open: boolean; onClose: () => void
               </div>
               {mutation.error && (
                 <p className="text-sm text-red-600">
-                  {mutation.error.message === "Email already registered"
-                    ? t("admin.emailAlreadyRegistered")
+                  {mutation.error.message === "Nickname already registered"
+                    ? t("admin.nicknameAlreadyRegistered")
                     : mutation.error.message || t("admin.createFailed")}
                 </p>
               )}
@@ -206,7 +354,7 @@ function CreateUserModal({ open, onClose }: { open: boolean; onClose: () => void
                 onClick={() => mutation.mutate()}
                 disabled={
                   mutation.isPending
-                  || !form.email
+                  || !form.nickname.trim()
                   || !form.firstName.trim()
                   || !form.lastName.trim()
                 }
@@ -221,12 +369,16 @@ function CreateUserModal({ open, onClose }: { open: boolean; onClose: () => void
   );
 }
 
-function EditUserModal({ user, onClose }: { user: any; onClose: () => void }) {
+function EditUserModal({ user, onClose }: { user: AdminUser; onClose: () => void }) {
   const { t } = useI18n();
   const [role, setRole] = useState(user.role);
   const [name, setName] = useState(user.name ?? "");
-  const [resetPassword, setResetPassword] = useState<string | null>(null);
+  const [isActive, setIsActive] = useState(user.isActive);
+  const [customPassword, setCustomPassword] = useState("");
+  const [credentials, setCredentials] = useState<CredentialsView | null>(null);
   const qc = useQueryClient();
+  const handle = loginHandle(user);
+  const RoleIcon = ROLE_ICONS[role] ?? Users;
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -234,14 +386,25 @@ function EditUserModal({ user, onClose }: { user: any; onClose: () => void }) {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ role, name: name || undefined }),
+        body: JSON.stringify({
+          role,
+          name: name || undefined,
+          isActive,
+          ...(customPassword.trim() ? { password: customPassword.trim() } : {}),
+        }),
       });
-      if (!res.ok) throw new Error("Failed");
-      return res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed");
+      return data;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/users"] });
-      onClose();
+      if (customPassword.trim()) {
+        setCredentials({ nickname: handle, password: customPassword.trim(), usesCustomPassword: true });
+        setCustomPassword("");
+      } else {
+        onClose();
+      }
     },
   });
 
@@ -249,77 +412,186 @@ function EditUserModal({ user, onClose }: { user: any; onClose: () => void }) {
     mutationFn: async () => {
       const res = await fetch(`/api/users/${user.id}/reset-password`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         credentials: "include",
+        body: JSON.stringify({}),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Failed");
-      return data as { generatedPassword: string };
+      if (!data.generatedPassword || typeof data.generatedPassword !== "string") {
+        throw new Error(t("admin.generatePasswordFailed"));
+      }
+      return data as { generatedPassword: string; nickname?: string };
     },
-    onSuccess: (data) => setResetPassword(data.generatedPassword),
+    onMutate: () => {
+      setCredentials(null);
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["/api/users"] });
+      setCredentials({
+        nickname: data.nickname ?? handle,
+        password: data.generatedPassword,
+        usesCustomPassword: true,
+      });
+      setCustomPassword("");
+      toast.success(t("admin.newPasswordGenerated"));
+    },
+    onError: (err: Error) => {
+      setCredentials(null);
+      toast.error(err.message || t("admin.saveFailed"));
+    },
+  });
+
+  const viewMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/users/${user.id}/credentials`, { credentials: "include" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed");
+      return data as CredentialsView;
+    },
+    onSuccess: (data) => {
+      setCredentials({
+        nickname: data.nickname || handle,
+        password: data.password,
+        usesCustomPassword: data.usesCustomPassword,
+        canReveal: data.canReveal,
+      });
+      if (!data.password) {
+        toast.message(t("admin.viewCredentialsNoPassword"));
+      }
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || t("admin.saveFailed"));
+    },
   });
 
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="sm:max-w-sm">
-        <DialogHeader>
-          <DialogTitle className="text-foreground flex items-center gap-2">
+      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto gap-0 p-0">
+        <DialogHeader className="px-6 pt-6 pb-4 border-b border-border/60">
+          <DialogTitle className="text-foreground flex items-center gap-2 text-lg">
             <Pencil className="h-4 w-4 text-accent" /> {t("admin.editUser")}
           </DialogTitle>
         </DialogHeader>
-        <div className="space-y-4">
-          <div className="flex items-center gap-3 bg-muted/50 rounded-lg p-3">
-            <Avatar className="h-10 w-10 border border-border">
-              <AvatarFallback className="bg-primary text-white text-sm font-bold">
-                {(user.name || user.email || "?").charAt(0).toUpperCase()}
-              </AvatarFallback>
-            </Avatar>
-            <div>
-              <p className="font-semibold text-foreground text-sm">{user.name || t("common.emDash")}</p>
-              <p className="text-xs text-muted-foreground">{user.email}</p>
+
+        <div className="px-6 py-5 space-y-5">
+          <div className="rounded-xl border border-border bg-gradient-to-br from-muted/50 via-card to-muted/30 p-4 shadow-sm">
+            <div className="flex items-start gap-3">
+              <Avatar className="h-12 w-12 border-2 border-background shadow-sm shrink-0">
+                <AvatarFallback className="bg-primary text-white text-base font-bold">
+                  {(user.name || handle || "?").charAt(0).toUpperCase()}
+                </AvatarFallback>
+              </Avatar>
+              <div className="min-w-0 flex-1 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-semibold text-base text-foreground truncate">
+                    {user.name || t("common.emDash")}
+                  </p>
+                  <Badge variant="outline" className={`gap-1 text-[10px] ${ROLE_COLORS[role] || ""}`}>
+                    <RoleIcon className="h-3 w-3" />
+                    {translateRole(t, role)}
+                  </Badge>
+                  {!isActive && (
+                    <Badge variant="outline" className="text-[10px] text-muted-foreground border-border">
+                      {t("status.inactive")}
+                    </Badge>
+                  )}
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                    {t("admin.login")}
+                  </p>
+                  <p className="text-sm font-mono font-semibold text-accent">{loginLabel(user)}</p>
+                </div>
+              </div>
             </div>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="edit-name">{t("admin.displayName")}</Label>
-            <Input
-              id="edit-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={t("admin.fullNamePh")}
+
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-name">{t("admin.displayName")}</Label>
+              <Input
+                id="edit-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={t("admin.fullNamePh")}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>{t("admin.role")}</Label>
+              <Select value={role} onValueChange={setRole}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="admin">{translateRole(t, "admin")}</SelectItem>
+                  <SelectItem value="dispatcher">{translateRole(t, "dispatcher")}</SelectItem>
+                  <SelectItem value="accounting">{translateRole(t, "accounting")}</SelectItem>
+                  <SelectItem value="driver">{translateRole(t, "driver")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="space-y-3 rounded-xl border border-border bg-muted/20 p-4">
+            <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+              {t("admin.loginAccess")}
+            </p>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-foreground">{t("admin.disableLogin")}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{t("admin.disableLoginHint")}</p>
+              </div>
+              <Switch checked={isActive} onCheckedChange={setIsActive} className="shrink-0" />
+            </div>
+            <div className="space-y-1.5 pt-1">
+              <Label htmlFor="edit-password">{t("admin.customPassword")}</Label>
+              <PasswordInput
+                id="edit-password"
+                value={customPassword}
+                onChange={setCustomPassword}
+                placeholder={t("admin.customPasswordPh")}
+                t={t}
+              />
+              <p className="text-[11px] text-muted-foreground">{t("admin.customPasswordHint")}</p>
+            </div>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={() => viewMutation.mutate()}
+                disabled={viewMutation.isPending}
+              >
+                {viewMutation.isPending ? t("admin.viewingCredentials") : t("admin.viewCredentials")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => resetMutation.mutate()}
+                disabled={resetMutation.isPending}
+              >
+                {resetMutation.isPending ? t("admin.generatingNewPassword") : t("admin.generateNewPassword")}
+              </Button>
+              <p className="text-[11px] text-muted-foreground w-full">{t("admin.generateNewPasswordHint")}</p>
+            </div>
+          </div>
+
+          {credentials && (
+            <CredentialsPanel
+              credentials={credentials}
+              t={t}
+              onCopy={() => void copyLoginCredentials(t, credentials.nickname, credentials.password)}
             />
-          </div>
-          <div className="space-y-1.5">
-            <Label>{t("admin.role")}</Label>
-            <Select value={role} onValueChange={setRole}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="admin">{translateRole(t, "admin")}</SelectItem>
-                <SelectItem value="dispatcher">{translateRole(t, "dispatcher")}</SelectItem>
-                <SelectItem value="accounting">{translateRole(t, "accounting")}</SelectItem>
-                <SelectItem value="driver">{translateRole(t, "driver")}</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          {resetPassword && (
-            <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm">
-              <p className="text-xs text-green-800 font-medium mb-1">{t("admin.generatedPassword")}</p>
-              <p className="font-mono font-bold text-green-900 break-all">{resetPassword}</p>
-            </div>
           )}
+
           {mutation.error && <p className="text-sm text-red-600">{t("admin.saveFailed")}</p>}
         </div>
-        <DialogFooter className="flex-col sm:flex-row gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            className="sm:mr-auto"
-            onClick={() => resetMutation.mutate()}
-            disabled={resetMutation.isPending}
-          >
-            {resetMutation.isPending ? t("admin.resettingPassword") : t("admin.resetPassword")}
-          </Button>
+
+        <DialogFooter className="px-6 py-4 border-t border-border/60 bg-muted/20 gap-2 sm:justify-end">
           <Button variant="outline" onClick={onClose}>{t("common.cancel")}</Button>
           <Button
-            className="bg-primary hover:bg-primary/90 text-white"
+            className="bg-primary hover:bg-primary/90 text-white min-w-[88px]"
             onClick={() => mutation.mutate()}
             disabled={mutation.isPending}
           >
@@ -336,7 +608,7 @@ export default function AdminPanel() {
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
   const [createOpen, setCreateOpen] = useState(false);
-  const [editUser, setEditUser] = useState<any | null>(null);
+  const [editUser, setEditUser] = useState<AdminUser | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; label: string } | null>(null);
   const qc = useQueryClient();
 
@@ -399,10 +671,11 @@ export default function AdminPanel() {
   });
 
   const filtered = (users ?? []).filter((u) => {
+    const login = userLogin(u as AdminUser);
     const matchSearch =
       !search ||
       (u.name ?? "").toLowerCase().includes(search.toLowerCase()) ||
-      u.email.toLowerCase().includes(search.toLowerCase());
+      login.toLowerCase().includes(search.toLowerCase());
     const matchRole = roleFilter === "all" || u.role === roleFilter;
     return matchSearch && matchRole;
   });
@@ -518,7 +791,7 @@ export default function AdminPanel() {
             <thead className="text-xs text-muted-foreground bg-muted/50 uppercase border-b">
               <tr>
                 <th className="px-6 py-3">{t("common.user")}</th>
-                <th className="px-6 py-3">{t("admin.email")}</th>
+                <th className="px-6 py-3">{t("admin.login")}</th>
                 <th className="px-6 py-3">{t("admin.role")}</th>
                 <th className="px-6 py-3 text-center">{t("dashboard.status")}</th>
                 <th className="px-6 py-3">{t("admin.joined")}</th>
@@ -553,7 +826,7 @@ export default function AdminPanel() {
                         <div className="flex items-center gap-3">
                           <Avatar className="h-9 w-9 border border-border">
                             <AvatarFallback className="bg-primary text-white text-xs font-bold">
-                              {(user.name || user.email || "?").charAt(0).toUpperCase()}
+                              {(user.name || userLogin(user as AdminUser) || "?").charAt(0).toUpperCase()}
                             </AvatarFallback>
                           </Avatar>
                           <div>
@@ -568,7 +841,7 @@ export default function AdminPanel() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-6 py-4 text-muted-foreground">{user.email}</td>
+                      <td className="px-6 py-4 font-mono text-sm text-accent">{loginLabel(user as AdminUser)}</td>
                       <td className="px-6 py-4">
                         <Badge
                           variant="outline"
@@ -617,7 +890,7 @@ export default function AdminPanel() {
                             onClick={() =>
                               setDeleteTarget({
                                 id: user.id,
-                                label: user.name || user.email,
+                                label: user.name || userLogin(user as AdminUser),
                               })
                             }
                           >

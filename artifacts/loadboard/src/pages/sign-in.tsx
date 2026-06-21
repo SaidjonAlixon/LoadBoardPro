@@ -10,11 +10,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { LoadBoardProLogo } from "@/components/brand-logo";
 
+function sanitizeLoginInput(value: string): string {
+  const trimmed = value.replace(/\s/g, "");
+  if (trimmed.includes("@")) {
+    return trimmed.toLowerCase();
+  }
+  return trimmed.toLowerCase().replace(/[^a-z0-9_]/g, "");
+}
+
 export default function SignInPage() {
   const { login } = useAuth();
   const { t } = useI18n();
   const [, setLocation] = useLocation();
-  const [email, setEmail] = useState("");
+  const [loginId, setLoginId] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
@@ -22,14 +30,14 @@ export default function SignInPage() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const qEmail = params.get("email");
+    const qLogin = params.get("login") ?? params.get("nickname") ?? params.get("email");
     const qPassword = params.get("password");
-    if (!qEmail || !qPassword) return;
+    if (!qLogin || !qPassword) return;
 
-    setEmail(qEmail);
+    setLoginId(qLogin);
     setPassword(qPassword);
     setLoading(true);
-    login(qEmail, qPassword)
+    login(qLogin, qPassword)
       .then(() => setLocation("/dashboard"))
       .catch((err) => setError(err instanceof Error ? err.message : t("auth.loginFailed")))
       .finally(() => setLoading(false));
@@ -40,10 +48,15 @@ export default function SignInPage() {
     setError("");
     setLoading(true);
     try {
-      await login(email, password);
+      await login(loginId, password);
       setLocation("/dashboard");
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("auth.loginFailed"));
+      const msg = err instanceof Error ? err.message : "";
+      setError(
+        msg === "Invalid login or password" || msg === "Login failed"
+          ? t("auth.invalidCredentials")
+          : msg || t("auth.loginFailed"),
+      );
     } finally {
       setLoading(false);
     }
@@ -66,16 +79,18 @@ export default function SignInPage() {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="email">{t("auth.email")}</Label>
+            <Label htmlFor="login">{t("auth.loginOrGmail")}</Label>
             <Input
-              id="email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder={t("auth.emailPlaceholder")}
+              id="login"
+              type="text"
+              value={loginId}
+              onChange={(e) => setLoginId(sanitizeLoginInput(e.target.value))}
+              placeholder={t("auth.loginOrGmailPlaceholder")}
               required
-              autoComplete="email"
+              autoComplete="username"
+              spellCheck={false}
             />
+            <p className="text-[11px] text-muted-foreground">{t("auth.loginOrGmailHint")}</p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="password">{t("auth.password")}</Label>

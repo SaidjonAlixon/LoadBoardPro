@@ -1,8 +1,17 @@
 import { Router } from "express";
 import { db, loadsTable, notificationsTable, usersTable } from "@workspace/db";
-import { and, eq } from "drizzle-orm";
-import { hashPassword } from "../lib/auth";
-import { derivePasswordFromEmail, isGmailAddress, normalizeEmail } from "../lib/user-credentials";
+import { and, eq, or } from "drizzle-orm";
+import { hashPassword, verifyPassword } from "../lib/auth";
+import {
+  derivePasswordFromNickname,
+  encryptStoredPassword,
+  generateRandomPassword,
+  isValidNickname,
+  normalizeNickname,
+  resolveLoginHandle,
+  resolveRevealablePassword,
+  validateCustomPassword,
+} from "../lib/user-credentials";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/requireAuth";
 import { isAvatarKeyValidForRole } from "../lib/profile-avatars";
 
@@ -57,17 +66,18 @@ router.get("/", requireAuth, requireRole("admin"), async (_req, res) => {
 
 // POST /api/users (admin only)
 router.post("/", requireAuth, requireRole("admin"), async (req: AuthRequest, res) => {
-  const { email, firstName, lastName, name, role } = req.body as {
-    email?: string;
+  const { nickname, firstName, lastName, name, role, password } = req.body as {
+    nickname?: string;
     firstName?: string;
     lastName?: string;
     name?: string;
     role?: string;
+    password?: string;
   };
 
-  const normalizedEmail = email ? normalizeEmail(email) : "";
-  if (!normalizedEmail || !isGmailAddress(normalizedEmail)) {
-    res.status(400).json({ error: "A valid @gmail.com address is required" });
+  const normalizedNickname = nickname ? normalizeNickname(nickname) : "";
+  if (!normalizedNickname || !isValidNickname(normalizedNickname)) {
+    res.status(400).json({ error: "A valid nickname is required (3–32 letters, numbers, or _)" });
     return;
   }
 
@@ -86,22 +96,37 @@ router.post("/", requireAuth, requireRole("admin"), async (req: AuthRequest, res
   }
 
   const existing = await db.query.usersTable.findFirst({
-    where: eq(usersTable.email, normalizedEmail),
+    where: eq(usersTable.nickname, normalizedNickname),
   });
   if (existing) {
-    res.status(409).json({ error: "Email already registered" });
+    res.status(409).json({ error: "Nickname already registered" });
     return;
   }
 
-  const generatedPassword = derivePasswordFromEmail(normalizedEmail);
+  let plainPassword: string;
+  let usesCustomPassword = false;
+  if (password?.trim()) {
+    const passwordError = validateCustomPassword(password.trim());
+    if (passwordError) {
+      res.status(400).json({ error: passwordError });
+      return;
+    }
+    plainPassword = password.trim();
+    usesCustomPassword = true;
+  } else {
+    plainPassword = derivePasswordFromNickname(normalizedNickname);
+  }
 
   try {
     const [user] = await db
       .insert(usersTable)
       .values({
         id: crypto.randomUUID(),
-        email: normalizedEmail,
-        passwordHash: await hashPassword(generatedPassword),
+        nickname: normalizedNickname,
+        email: null,
+        passwordHash: await hashPassword(plainPassword),
+        passwordEncrypted: encryptStoredPassword(plainPassword),
+        usesCustomPassword,
         name: fullName,
         role,
       })
@@ -109,12 +134,12 @@ router.post("/", requireAuth, requireRole("admin"), async (req: AuthRequest, res
 
     res.status(201).json({
       user: serializeUser(user),
-      generatedPassword,
+      generatedPassword: plainPassword,
     });
   } catch (err: unknown) {
     const code = (err as { code?: string })?.code;
     if (code === "23505") {
-      res.status(409).json({ error: "Email already registered" });
+      res.status(409).json({ error: "Nickname already registered" });
       return;
     }
     req.log?.error?.({ err }, "Create user failed");
@@ -122,8 +147,8 @@ router.post("/", requireAuth, requireRole("admin"), async (req: AuthRequest, res
   }
 });
 
-// POST /api/users/:id/reset-password (admin only)
-router.post("/:id/reset-password", requireAuth, requireRole("admin"), async (req, res) => {
+// GET /api/users/:id/credentials (admin only — reveal login + default password)
+router.get("/:id/credentials", requireAuth, requireRole("admin"), async (req, res) => {
   const user = await db.query.usersTable.findFirst({
     where: eq(usersTable.id, req.params.id),
   });
@@ -132,26 +157,93 @@ router.post("/:id/reset-password", requireAuth, requireRole("admin"), async (req
     return;
   }
 
-  const generatedPassword = derivePasswordFromEmail(user.email);
+  const login = resolveLoginHandle(user);
+  const password = await resolveRevealablePassword(user, verifyPassword);
+
+  res.json({
+    nickname: login,
+    password,
+    usesCustomPassword: user.usesCustomPassword,
+    canReveal: password != null,
+  });
+});
+
+// POST /api/users/:id/reset-password (admin only)
+router.post("/:id/reset-password", requireAuth, requireRole("admin"), async (req, res) => {
+  const { password } = req.body as { password?: string };
+  const user = await db.query.usersTable.findFirst({
+    where: eq(usersTable.id, req.params.id),
+  });
+  if (!user) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+
+  const login = resolveLoginHandle(user);
+  if (!login) {
+    res.status(400).json({ error: "User has no login nickname" });
+    return;
+  }
+
+  let plainPassword: string;
+  let usesCustomPassword: boolean;
+  if (password?.trim()) {
+    const passwordError = validateCustomPassword(password.trim());
+    if (passwordError) {
+      res.status(400).json({ error: passwordError });
+      return;
+    }
+    plainPassword = password.trim();
+    usesCustomPassword = true;
+  } else {
+    plainPassword = generateRandomPassword(login);
+    usesCustomPassword = true;
+  }
+
   const [updated] = await db
     .update(usersTable)
-    .set({ passwordHash: await hashPassword(generatedPassword) })
+    .set({
+      passwordHash: await hashPassword(plainPassword),
+      passwordEncrypted: encryptStoredPassword(plainPassword),
+      usesCustomPassword,
+    })
     .where(eq(usersTable.id, user.id))
     .returning();
 
   res.json({
     user: serializeUser(updated),
-    generatedPassword,
+    generatedPassword: plainPassword,
+    nickname: login,
   });
 });
 
 // PATCH /api/users/:id (admin only)
 router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
-  const { name, role, isActive } = req.body;
+  const { name, role, isActive, password } = req.body as {
+    name?: string;
+    role?: string;
+    isActive?: boolean;
+    password?: string;
+  };
   const updates: Record<string, unknown> = {};
   if (name !== undefined) updates.name = name;
   if (role !== undefined) updates.role = role;
   if (isActive !== undefined) updates.isActive = isActive;
+
+  if (password !== undefined) {
+    if (!password.trim()) {
+      res.status(400).json({ error: "Password cannot be empty" });
+      return;
+    }
+    const passwordError = validateCustomPassword(password.trim());
+    if (passwordError) {
+      res.status(400).json({ error: passwordError });
+      return;
+    }
+    updates.passwordHash = await hashPassword(password.trim());
+    updates.passwordEncrypted = encryptStoredPassword(password.trim());
+    updates.usesCustomPassword = true;
+  }
 
   const [updated] = await db
     .update(usersTable)
@@ -205,13 +297,16 @@ router.delete("/:id", requireAuth, requireRole("admin"), async (req: AuthRequest
 });
 
 function serializeUser(u: typeof usersTable.$inferSelect) {
+  const login = resolveLoginHandle(u);
   return {
     id: u.id,
+    nickname: login || null,
     email: u.email,
     name: u.name,
     avatarKey: u.avatarKey,
     role: u.role,
     isActive: u.isActive,
+    usesCustomPassword: u.usesCustomPassword,
     createdAt: u.createdAt,
   };
 }
