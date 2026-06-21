@@ -8,7 +8,6 @@ import Home from "./pages/home";
 import Dashboard from "./pages/dashboard";
 import LoadsList from "./pages/loads";
 import LoadDetail from "./pages/load-detail";
-import WeeklyView from "./pages/weekly";
 import DriversList from "./pages/drivers";
 import DriverDetail from "./pages/driver-detail";
 import Accounting from "./pages/accounting";
@@ -73,7 +72,6 @@ function AppRoutes() {
       <Route path="/dashboard"><ProtectedRoute component={Dashboard} /></Route>
       <Route path="/loads"><ProtectedRoute component={LoadsList} /></Route>
       <Route path="/loads/:id"><ProtectedRoute component={LoadDetail} /></Route>
-      <Route path="/weekly"><ProtectedRoute component={WeeklyView} /></Route>
       <Route path="/drivers"><ProtectedRoute component={DriversList} /></Route>
       <Route path="/drivers/:id"><ProtectedRoute component={DriverDetail} /></Route>
       <Route path="/accounting" component={AccountingRoute} />

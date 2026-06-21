@@ -193,11 +193,24 @@ router.get("/status-breakdown", requireAuth, async (req: AuthRequest, res) => {
 
 // GET /api/analytics/drivers-today — live driver status for today (not period filters)
 router.get("/drivers-today", requireAuth, async (req: AuthRequest, res) => {
-  const { dispatcherId } = req.query as Record<string, string>;
+  const { dispatcherId, scope } = req.query as Record<string, string>;
   const isDispatcher = req.userRole === "dispatcher" && req.userId;
-  const scopedDispatcherId = isDispatcher ? req.userId! : dispatcherId || undefined;
 
-  const result = await getDriversTodayStatus(scopedDispatcherId);
+  if (isDispatcher) {
+    const effectiveScope = scope === "mine" ? "mine" : "company";
+    const result = await getDriversTodayStatus({
+      scope: effectiveScope,
+      dispatcherId: effectiveScope === "mine" ? req.userId! : undefined,
+    });
+    res.json(result);
+    return;
+  }
+
+  const result = await getDriversTodayStatus(
+    dispatcherId
+      ? { scope: "mine", dispatcherId }
+      : { scope: "company" },
+  );
   res.json(result);
 });
 

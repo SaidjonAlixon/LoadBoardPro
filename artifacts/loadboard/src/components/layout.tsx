@@ -8,7 +8,6 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import {
   LayoutDashboard,
   Truck,
-  CalendarDays,
   Users,
   Calculator,
   Bell,
@@ -56,7 +55,6 @@ export default function Layout({ children }: LayoutProps) {
   const baseNavItems: NavItem[] = [
     { labelKey: "nav.dashboard", href: "/dashboard", icon: LayoutDashboard },
     { labelKey: "nav.loads", href: "/loads", icon: Truck },
-    { labelKey: "nav.weeklyView", href: "/weekly", icon: CalendarDays },
     { labelKey: "nav.drivers", href: "/drivers", icon: Users },
     ...(showAccounting
       ? [{ labelKey: "nav.accounting", href: "/accounting", icon: Calculator }]
@@ -111,7 +109,7 @@ export default function Layout({ children }: LayoutProps) {
     window.location.href = "/";
   };
 
-  const isFullWidth = location === "/loads" || location === "/weekly" || location === "/accounting";
+  const isFullWidth = location === "/loads" || location === "/accounting";
   const isCompactPage = location === "/settings";
 
   const sidebarContent = (onNavClick?: () => void) => (

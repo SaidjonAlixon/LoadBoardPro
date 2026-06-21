@@ -498,7 +498,6 @@ export function LoadsSpreadsheet({
       onSuccess: () => {
         qc.invalidateQueries({ queryKey: ["/api/loads"] });
         qc.invalidateQueries({ queryKey: ["/api/analytics"] });
-        qc.invalidateQueries({ queryKey: ["/api/weekly"] });
       },
     },
   });
@@ -633,7 +632,6 @@ export function LoadsSpreadsheet({
         }
         void qc.invalidateQueries({ queryKey: ["/api/loads"] });
         void qc.invalidateQueries({ queryKey: ["/api/analytics"] });
-        void qc.invalidateQueries({ queryKey: ["/api/weekly"] });
         toast.success(t("loads.sheet.deleteGroupSuccess"));
       } catch (err) {
         const msg = err instanceof Error ? err.message : "";

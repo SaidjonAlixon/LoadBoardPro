@@ -16,6 +16,7 @@ import {
   fetchDriversToday,
   driversForChipFilter,
   type DriverChipFilter,
+  type DriversTodayScope,
 } from "@/lib/drivers-today";
 import { DollarSign, Route, TrendingUp, Divide } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
@@ -52,6 +53,7 @@ export default function Dashboard() {
   const [exporting, setExporting] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const [driverChipFilter, setDriverChipFilter] = useState<DriverChipFilter | null>(null);
+  const [driverScope, setDriverScope] = useState<DriversTodayScope>("company");
 
   const { data: me } = useGetMe({});
   const isDispatcher = me?.role === "dispatcher";
@@ -84,11 +86,20 @@ export default function Dashboard() {
   });
 
   const todayDispatcherId =
-    isDispatcher ? undefined : dispatcherFilter !== "all" ? dispatcherFilter : undefined;
+    isDispatcher
+      ? (driverScope === "mine" ? me?.id : undefined)
+      : (dispatcherFilter !== "all" ? dispatcherFilter : undefined);
+
+  const todayScope: DriversTodayScope | undefined = isDispatcher
+    ? driverScope
+    : (todayDispatcherId ? "mine" : "company");
 
   const { data: driversToday, isLoading: driversTodayLoading } = useQuery({
-    queryKey: ["/api/analytics/drivers-today", todayDispatcherId ?? "all"],
-    queryFn: () => fetchDriversToday(todayDispatcherId),
+    queryKey: ["/api/analytics/drivers-today", todayScope ?? "company", todayDispatcherId ?? "all"],
+    queryFn: () => fetchDriversToday({
+      scope: todayScope,
+      dispatcherId: todayDispatcherId,
+    }),
     refetchInterval: autoRefresh ? AUTO_REFRESH_SEC * 1000 : false,
   });
 
@@ -98,7 +109,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     setDriverChipFilter(null);
-  }, [todayDispatcherId]);
+  }, [todayDispatcherId, driverScope]);
 
   const driverPanelTitle = useMemo(() => {
     if (driverChipFilter === "covered") return t("dashboard.driversTodayCovered");
@@ -204,7 +215,20 @@ export default function Dashboard() {
     }
     setExporting(true);
     try {
-      const loads = await fetchAllFilteredLoads(filterParams);
+      const [loads, driversExport] = await Promise.all([
+        fetchAllFilteredLoads(filterParams),
+        fetchDriversToday({
+          scope: todayScope,
+          dispatcherId: todayDispatcherId,
+        }),
+      ]);
+      const driversScopeLabel = isDispatcher
+        ? (driverScope === "mine" ? t("dashboard.driversScopeMine") : t("dashboard.driversScopeAll"))
+        : (todayDispatcherId
+          ? (dispatchers?.find((d) => d.id === todayDispatcherId)?.name
+            ?? dispatchers?.find((d) => d.id === todayDispatcherId)?.email
+            ?? t("dashboard.allDispatchers"))
+          : t("dashboard.driversScopeAll"));
       const loadsLabels = getDashboardLoadsExportLabels(t);
       await exportDashboardExcel(
         {
@@ -214,8 +238,11 @@ export default function Dashboard() {
           ranking: ranking ?? [],
           statusBreakdown: [],
           loads,
+          driversToday: driversExport,
+          driversScopeLabel,
           formatCurrency,
           formatDate,
+          formatNumber,
           translateStatus: (s) => translateLoadStatus(t, s),
         },
         {
@@ -225,6 +252,7 @@ export default function Dashboard() {
             performance: t("dashboard.leaderboard"),
             status: t("dashboard.loadStatus"),
             loads: t("dashboard.exportSheetLoads"),
+            drivers: t("dashboard.exportSheetDrivers"),
           },
           summary: {
             title: t("dashboard.title"),
@@ -257,6 +285,49 @@ export default function Dashboard() {
             period: t("dashboard.exportPeriod"),
             dispatcher: t("dashboard.filterDispatcher"),
             ...loadsLabels,
+          },
+          drivers: {
+            title: t("dashboard.exportDriversTitle"),
+            date: t("dashboard.exportDriversDate"),
+            scope: t("dashboard.exportDriversScope"),
+            sectionOverview: t("dashboard.exportDriversOverview"),
+            sectionLoads: t("dashboard.exportDriversLoadsSection"),
+            overviewHeaders: [
+              t("loads.sheet.rowNumber"),
+              t("dashboard.driver"),
+              t("loads.sheet.type"),
+              t("drivers.truckNumber"),
+              t("drivers.phone"),
+              t("drivers.email"),
+              t("dashboard.status"),
+              t("dashboard.currentLocation"),
+              t("dashboard.loads"),
+              t("dashboard.gross"),
+              t("loads.sheet.mileage"),
+              t("loads.sheet.reimbursement"),
+              t("dashboard.exportActiveStatus"),
+            ],
+            loadHeaders: [
+              t("dashboard.driver"),
+              t("loads.sheet.loadNumber"),
+              t("loads.sheet.status"),
+              t("loads.sheet.puDate"),
+              t("loads.sheet.origin"),
+              t("loads.sheet.delDate"),
+              t("loads.sheet.destination"),
+              t("loads.sheet.mileage"),
+              t("loads.sheet.rpm"),
+              t("loads.sheet.rate"),
+              t("loads.sheet.reimbursement"),
+              t("loads.sheet.dispatcher"),
+              t("loads.broker"),
+              t("loads.sheet.dispatchNotes"),
+            ],
+            statusCovered: t("dashboard.driversOnLoad"),
+            statusReady: t("dashboard.driversEmpty"),
+            active: t("status.active"),
+            inactive: t("status.inactive"),
+            noLoadToday: t("dashboard.driverNoLoadToday"),
           },
         },
       );
@@ -376,7 +447,7 @@ export default function Dashboard() {
         <CardContent className="p-4 sm:p-5">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
             <p className="text-sm font-medium text-muted-foreground">
-              {isDispatcher ? t("dashboard.driverStatsDispatcher") : t("dashboard.driverStatsCompany")}
+              {t("dashboard.driverStats")}
             </p>
             <p
               className="text-sm font-semibold text-foreground tabular-nums"
@@ -393,6 +464,27 @@ export default function Dashboard() {
             </div>
           ) : (
             <>
+              {isDispatcher && (
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {([
+                    { key: "company" as const, label: t("dashboard.driversScopeAll") },
+                    { key: "mine" as const, label: t("dashboard.driversScopeMine") },
+                  ]).map(({ key, label }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setDriverScope(key)}
+                      className={`inline-flex items-center rounded-lg border px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors ${
+                        driverScope === key
+                          ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                          : "bg-muted/40 border-border text-muted-foreground hover:bg-muted/60"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
               <DriverStatusChips
                 total={driversToday?.totalDrivers ?? 0}
                 covered={driversToday?.driversOnLoad ?? 0}

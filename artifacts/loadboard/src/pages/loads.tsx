@@ -848,7 +848,6 @@ export default function LoadsList() {
       }
       void qc.invalidateQueries({ queryKey: ["/api/board-weeks"] });
       void qc.invalidateQueries({ queryKey: ["/api/loads"] });
-      void qc.invalidateQueries({ queryKey: ["/api/weekly"] });
       toast.success(t("loads.weekCreated"));
     },
     onError: (err: Error) => {

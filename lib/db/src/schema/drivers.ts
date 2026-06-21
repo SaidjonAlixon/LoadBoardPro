@@ -11,6 +11,7 @@ export const driversTable = pgTable("drivers", {
   phone: text("phone"),
   email: text("email"),
   truckNumber: text("truck_number"),
+  currentLocation: text("current_location"),
   isActive: boolean("is_active").notNull().default(true),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

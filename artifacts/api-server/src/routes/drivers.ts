@@ -121,7 +121,7 @@ router.get("/:id", requireAuth, async (req, res) => {
 
 // PATCH /api/drivers/:id
 router.patch("/:id", requireAuth, async (req, res) => {
-  const { fullName, driverType, phone, email, truckNumber, isActive } = req.body;
+  const { fullName, driverType, phone, email, truckNumber, isActive, currentLocation } = req.body;
   const updates: Record<string, unknown> = {};
   if (fullName !== undefined) updates.fullName = fullName;
   if (driverType !== undefined) updates.driverType = driverType;
@@ -129,6 +129,12 @@ router.patch("/:id", requireAuth, async (req, res) => {
   if (email !== undefined) updates.email = email;
   if (truckNumber !== undefined) updates.truckNumber = truckNumber;
   if (isActive !== undefined) updates.isActive = isActive;
+  if (currentLocation !== undefined) updates.currentLocation = currentLocation || null;
+
+  if (Object.keys(updates).length === 0) {
+    res.status(400).json({ error: "No fields to update" });
+    return;
+  }
 
   const [updated] = await db
     .update(driversTable)
@@ -161,6 +167,7 @@ function serializeDriver(d: typeof driversTable.$inferSelect) {
     phone: d.phone,
     email: d.email,
     truckNumber: d.truckNumber,
+    currentLocation: d.currentLocation,
     isActive: d.isActive,
     createdAt: d.createdAt,
   };

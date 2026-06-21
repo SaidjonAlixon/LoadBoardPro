@@ -1,5 +1,5 @@
 import { db, loadsTable, driversTable, usersTable, brokersTable } from "@workspace/db";
-import { eq, and, inArray, gte, lte, isNull } from "drizzle-orm";
+import { eq, and, inArray, gte, lte, isNull, sql } from "drizzle-orm";
 
 export const ON_LOAD_STATUSES = ["Booked", "InQM", "NeedRevRC", "Issue", "PickedUp"] as const;
 
@@ -7,7 +7,29 @@ export function todayIso(): string {
   return new Date().toISOString().split("T")[0];
 }
 
-export async function getDriversTodayStatus(dispatcherId?: string) {
+export type DriversTodayScope = "company" | "mine";
+
+async function getDispatcherDriverIds(dispatcherId: string): Promise<Set<string>> {
+  const rows = await db
+    .selectDistinct({ driverId: loadsTable.driverId })
+    .from(loadsTable)
+    .where(and(
+      eq(loadsTable.isDeleted, false),
+      eq(loadsTable.dispatcherId, dispatcherId),
+      sql`${loadsTable.driverId} is not null`,
+    ));
+
+  return new Set(
+    rows.map((r) => r.driverId).filter((id): id is string => Boolean(id)),
+  );
+}
+
+export async function getDriversTodayStatus(options?: {
+  scope?: DriversTodayScope;
+  dispatcherId?: string;
+}) {
+  const scope = options?.scope ?? (options?.dispatcherId ? "mine" : "company");
+  const dispatcherId = scope === "mine" ? options?.dispatcherId : undefined;
   const today = todayIso();
 
   const activeDrivers = await db
@@ -15,6 +37,12 @@ export async function getDriversTodayStatus(dispatcherId?: string) {
     .from(driversTable)
     .where(and(eq(driversTable.isActive, true), isNull(driversTable.deletedAt)))
     .orderBy(driversTable.fullName);
+
+  let scopedDrivers = activeDrivers;
+  if (scope === "mine" && dispatcherId) {
+    const pool = await getDispatcherDriverIds(dispatcherId);
+    scopedDrivers = activeDrivers.filter((d) => pool.has(d.id));
+  }
 
   const onLoadConditions = [
     eq(loadsTable.isDeleted, false),
@@ -74,11 +102,16 @@ export async function getDriversTodayStatus(dispatcherId?: string) {
     rpm: load.rpm != null ? Number(load.rpm) : null,
     status: load.status,
     reimbursement: Number(load.reimbursement ?? 0),
+    dispatchNotes: load.dispatchNotes ?? null,
+    invoicedAmount: load.invoicedAmount != null ? Number(load.invoicedAmount) : null,
+    brokerPaid: load.brokerPaid != null ? Number(load.brokerPaid) : null,
+    irDiff: load.irDiff != null ? Number(load.irDiff) : null,
+    biDiff: load.biDiff != null ? Number(load.biDiff) : null,
     dispatcher: load.dispatcherId ? dispMap[load.dispatcherId] ?? null : null,
     broker: load.brokerId ? brokerMap[load.brokerId] ?? null : null,
   });
 
-  const allDrivers = activeDrivers.map((driver) => {
+  const allDrivers = scopedDrivers.map((driver) => {
     const driverLoads = loadsByDriver.get(driver.id) ?? [];
     const totalGross = driverLoads.reduce(
       (sum, l) => sum + Number(l.rate) + Number(l.reimbursement ?? 0),
@@ -94,6 +127,7 @@ export async function getDriversTodayStatus(dispatcherId?: string) {
         phone: driver.phone,
         email: driver.email,
         truckNumber: driver.truckNumber,
+        currentLocation: driver.currentLocation,
         isActive: driver.isActive,
         createdAt: driver.createdAt,
       },
@@ -109,7 +143,8 @@ export async function getDriversTodayStatus(dispatcherId?: string) {
 
   return {
     date: today,
-    totalDrivers: activeDrivers.length,
+    scope,
+    totalDrivers: scopedDrivers.length,
     driversOnLoad: driversOnLoadToday.length,
     driversEmpty: driversEmptyToday.length,
     allDrivers,

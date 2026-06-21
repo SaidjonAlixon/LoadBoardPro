@@ -68,7 +68,7 @@ function serializeLoad(
 }
 
 function serializeDriver(d: typeof driversTable.$inferSelect) {
-  return { id: d.id, fullName: d.fullName, driverType: d.driverType, phone: d.phone, email: d.email, truckNumber: d.truckNumber, isActive: d.isActive, createdAt: d.createdAt };
+  return { id: d.id, fullName: d.fullName, driverType: d.driverType, phone: d.phone, email: d.email, truckNumber: d.truckNumber, currentLocation: d.currentLocation, isActive: d.isActive, createdAt: d.createdAt };
 }
 function serializeUser(u: typeof usersTable.$inferSelect) {
   return { id: u.id, email: u.email, name: u.name, role: u.role, isActive: u.isActive, createdAt: u.createdAt };

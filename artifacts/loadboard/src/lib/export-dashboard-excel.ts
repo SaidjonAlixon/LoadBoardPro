@@ -7,6 +7,10 @@ import type {
   ListLoadsParams,
 } from "@workspace/api-client-react";
 import { listLoads } from "@workspace/api-client-react";
+import {
+  sortDriversTodayBlocks,
+  type DriversTodayResponse,
+} from "@/lib/drivers-today";
 
 const HEADER_FILL: ExcelJS.Fill = {
   type: "pattern",
@@ -93,6 +97,7 @@ export type DashboardExportLabels = {
     performance: string;
     status: string;
     loads: string;
+    drivers: string;
   };
   summary: {
     title: string;
@@ -128,6 +133,20 @@ export type DashboardExportLabels = {
     totals: string;
     unassigned: string;
   };
+  drivers: {
+    title: string;
+    date: string;
+    scope: string;
+    sectionOverview: string;
+    sectionLoads: string;
+    overviewHeaders: string[];
+    loadHeaders: string[];
+    statusCovered: string;
+    statusReady: string;
+    active: string;
+    inactive: string;
+    noLoadToday: string;
+  };
 };
 
 export type DashboardExportData = {
@@ -137,8 +156,11 @@ export type DashboardExportData = {
   ranking: DispatcherRank[];
   statusBreakdown: StatusCount[];
   loads: Load[];
+  driversToday?: DriversTodayResponse;
+  driversScopeLabel?: string;
   formatCurrency: (n: number | null | undefined) => string;
   formatDate: (d: string | Date) => string;
+  formatNumber: (n: number | null | undefined) => string;
   translateStatus: (s: string) => string;
 };
 
@@ -189,6 +211,130 @@ export function getDashboardLoadsExportLabels(
       t("loads.sheet.biDiff"),
     ],
   };
+}
+
+function addDriversTodaySheet(
+  wb: ExcelJS.Workbook,
+  data: DashboardExportData,
+  labels: DashboardExportLabels,
+) {
+  if (!data.driversToday) return;
+
+  const sheet = wb.addWorksheet(labels.sheets.drivers, { views: [{ state: "frozen", ySplit: 6 }] });
+  const blocks = sortDriversTodayBlocks(data.driversToday.allDrivers);
+  const scopeLabel = data.driversScopeLabel ?? "";
+
+  sheet.mergeCells("A1:M1");
+  sheet.getCell("A1").value = labels.drivers.title;
+  sheet.getCell("A1").font = { bold: true, size: 14, color: { argb: "FF1E3A5F" } };
+  sheet.getCell("A2").value = `${labels.drivers.date}: ${data.formatDate(data.driversToday.date)}`;
+  sheet.getCell("A2").font = { size: 11, color: { argb: "FF475569" } };
+  if (scopeLabel) {
+    sheet.getCell("A3").value = `${labels.drivers.scope}: ${scopeLabel}`;
+    sheet.getCell("A3").font = { size: 11, color: { argb: "FF475569" } };
+  }
+
+  sheet.addRow([]);
+  const overviewTitleRow = sheet.addRow([labels.drivers.sectionOverview]);
+  overviewTitleRow.font = { bold: true, size: 12, color: { argb: "FF1E3A5F" } };
+
+  sheet.addRow(labels.drivers.overviewHeaders);
+  styleHeaderRow(sheet.getRow(sheet.rowCount));
+
+  blocks.forEach((block, i) => {
+    const isCovered = block.loads.length > 0;
+    const row = sheet.addRow([
+      i + 1,
+      block.driver.fullName,
+      driverTypeShort(block.driver.driverType),
+      block.driver.truckNumber ?? "",
+      block.driver.phone ?? "",
+      block.driver.email ?? "",
+      isCovered ? labels.drivers.statusCovered : labels.drivers.statusReady,
+      block.driver.currentLocation ?? "",
+      block.loads.length,
+      block.totalGross,
+      block.totalMiles,
+      block.totalReimbursement ?? 0,
+      block.driver.isActive ? labels.drivers.active : labels.drivers.inactive,
+    ]);
+    row.eachCell((cell, col) => {
+      styleBody(cell, i % 2 === 1);
+      if (col === 9 || col === 11) {
+        cell.numFmt = NUMBER_FMT;
+        cell.alignment = { horizontal: "right", vertical: "middle" };
+      } else if (col === 10 || col === 12) {
+        cell.numFmt = MONEY_FMT;
+        cell.alignment = { horizontal: "right", vertical: "middle" };
+      } else if (col === 1) {
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+      }
+    });
+  });
+
+  sheet.addRow([]);
+  const loadsTitleRow = sheet.addRow([labels.drivers.sectionLoads]);
+  loadsTitleRow.font = { bold: true, size: 12, color: { argb: "FF1E3A5F" } };
+
+  sheet.addRow(labels.drivers.loadHeaders);
+  styleHeaderRow(sheet.getRow(sheet.rowCount));
+
+  let loadRowIndex = 0;
+  blocks.forEach((block) => {
+    if (block.loads.length === 0) {
+      const row = sheet.addRow([
+        block.driver.fullName,
+        labels.drivers.noLoadToday,
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+      ]);
+      row.eachCell((cell) => styleBody(cell, loadRowIndex % 2 === 1));
+      loadRowIndex += 1;
+      return;
+    }
+
+    block.loads.forEach((load) => {
+      const row = sheet.addRow([
+        block.driver.fullName,
+        load.loadNumber,
+        data.translateStatus(load.status),
+        load.puDate,
+        cityState(load.originCity, load.originState),
+        load.delDate ?? "",
+        cityState(load.destCity, load.destState),
+        load.mileage ?? 0,
+        load.rpm ?? null,
+        load.rate ?? 0,
+        load.reimbursement ?? 0,
+        load.dispatcher?.name ?? load.dispatcher?.email ?? "",
+        load.broker?.name ?? "",
+        load.dispatchNotes ?? "",
+      ]);
+      row.eachCell((cell, col) => {
+        styleBody(cell, loadRowIndex % 2 === 1);
+        if (col === 8) {
+          cell.numFmt = NUMBER_FMT;
+          cell.alignment = { horizontal: "right", vertical: "middle" };
+        } else if ([9, 10, 11].includes(col)) {
+          cell.numFmt = MONEY_FMT;
+          cell.alignment = { horizontal: "right", vertical: "middle" };
+        }
+      });
+      loadRowIndex += 1;
+    });
+  });
+
+  autoFitColumns(sheet, 14, 52);
 }
 
 export async function exportDashboardExcel(
@@ -373,6 +519,8 @@ export async function exportDashboardExcel(
   }
 
   autoFitColumns(loadsSheet, 14, 52);
+
+  addDriversTodaySheet(wb, data, labels);
 
   const buffer = await wb.xlsx.writeBuffer();
   const blob = new Blob([buffer], {
