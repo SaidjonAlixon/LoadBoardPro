@@ -107,6 +107,30 @@ function mapLoadInner(
   };
 }
 
+function sumBlockTotals(loads: ReturnType<typeof mapLoadInner>[]) {
+  return {
+    totalGross: loads.reduce((sum, l) => sum + l.rate + (l.reimbursement ?? 0), 0),
+    totalMiles: loads.reduce((sum, l) => sum + l.mileage, 0),
+    totalReimbursement: loads.reduce((sum, l) => sum + (l.reimbursement ?? 0), 0),
+  };
+}
+
+function blockLoadsForDispatcher(
+  block: ReturnType<typeof buildDriverBlock>,
+  dispatcherId: string | null,
+) {
+  const filtered =
+    dispatcherId === null
+      ? block.loads.filter((l) => !l.dispatcherId)
+      : block.loads.filter((l) => l.dispatcherId === dispatcherId);
+  const totals = sumBlockTotals(filtered);
+  return {
+    ...block,
+    loads: filtered,
+    ...totals,
+  };
+}
+
 async function buildDispatcherGroups(
   allDrivers: ReturnType<typeof buildDriverBlock>[],
   weekStart: string,
@@ -122,7 +146,10 @@ async function buildDispatcherGroups(
 
   for (const dispatcher of dispatchers) {
     const pool = await getDispatcherDriverIds(dispatcher.id, weekStart);
-    const drivers = allDrivers.filter((b) => pool.has(b.driver.id));
+    const drivers = allDrivers
+      .filter((b) => pool.has(b.driver.id))
+      .map((b) => blockLoadsForDispatcher(b, dispatcher.id))
+      .filter((b) => b.loads.length > 0);
     if (!drivers.length) continue;
     drivers.forEach((b) => assigned.add(b.driver.id));
     groups.push({
@@ -132,7 +159,10 @@ async function buildDispatcherGroups(
     });
   }
 
-  const unassigned = allDrivers.filter((b) => !assigned.has(b.driver.id));
+  const unassigned = allDrivers
+    .filter((b) => !assigned.has(b.driver.id))
+    .map((b) => blockLoadsForDispatcher(b, null))
+    .filter((b) => b.loads.length > 0);
   if (unassigned.length) {
     groups.push({
       dispatcherId: null,

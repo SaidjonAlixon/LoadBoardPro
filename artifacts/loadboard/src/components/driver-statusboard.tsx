@@ -39,7 +39,18 @@ const DRIVER_TYPE_STYLES: Record<string, string> = {
   Lease: "bg-purple-100 text-purple-800 border border-purple-200 dark:bg-purple-950/50 dark:text-purple-200 dark:border-purple-800",
 };
 
-const COL_COUNT = 13;
+function resolveBoardLoad(
+  block: DriverTodayBlock,
+  sectionDispatcherId: string | null,
+  groupByDispatcher: boolean,
+) {
+  if (!block.loads.length) return undefined;
+  if (!groupByDispatcher) return block.loads[0];
+  if (sectionDispatcherId === null) {
+    return block.loads.find((l) => !l.dispatcherId) ?? block.loads[0];
+  }
+  return block.loads.find((l) => l.dispatcherId === sectionDispatcherId) ?? block.loads[0];
+}
 
 function cityState(city: string, state: string): string {
   if (!city || city === "-") return "";
@@ -140,7 +151,8 @@ export function DriverStatusboard({
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
-          throw new Error((err as { error?: string }).error ?? "save failed");
+          const message = (err as { error?: string }).error ?? "save failed";
+          throw new Error(message);
         }
         await Promise.all([
           invalidateDriverQueries(qc),
@@ -148,8 +160,9 @@ export function DriverStatusboard({
           qc.invalidateQueries({ queryKey: ["/api/analytics"] }),
         ]);
         return true;
-      } catch {
-        toast.error(t("statusboard.loadSaveFailed"));
+      } catch (e) {
+        const message = e instanceof Error ? e.message : t("statusboard.loadSaveFailed");
+        toast.error(message === "save failed" ? t("statusboard.loadSaveFailed") : message);
         return false;
       } finally {
         setSavingKey(null);
@@ -234,7 +247,7 @@ export function DriverStatusboard({
     block: DriverTodayBlock,
     section: { dispatcherId: string | null },
   ) => {
-    const load = block.loads[0];
+    const load = resolveBoardLoad(block, section.dispatcherId, groupByDispatcher);
     const d = block.driver;
     const boardStatus = (statusOverrides[d.id]
       ?? resolveDriverBoardStatus(d.boardStatus)) as DriverBoardStatus;
@@ -251,6 +264,12 @@ export function DriverStatusboard({
         editorRole === "dispatcher" &&
         load.status &&
         isLoadDispatcherLocked(load.status)
+      ) &&
+      !(
+        editorRole === "dispatcher" &&
+        load.dispatcherId &&
+        editorUserId &&
+        load.dispatcherId !== editorUserId
       );
     const rowSaving = savingKey === `driver:${d.id}` || (load && savingKey === `load:${load.id}`);
 
