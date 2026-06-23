@@ -1,0 +1,5 @@
+artifacts/mockup-sandbox/**
+.replit
+**/.env
+**/.env.*
+!**/.env.example

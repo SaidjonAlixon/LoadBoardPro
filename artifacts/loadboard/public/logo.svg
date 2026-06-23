@@ -1,0 +1,24 @@
+<svg width="680" height="200" viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif">
+  <defs>
+    <linearGradient id="scr" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1C2E52"/>
+      <stop offset="1" stop-color="#13213F"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(10, 22)">
+    <rect x="14" y="22" width="168" height="118" rx="12" fill="url(#scr)"/>
+    <rect x="24" y="32" width="148" height="98" rx="6" fill="#FFFFFF"/>
+    <circle cx="38" cy="48" r="4" fill="#2563EB"/>
+    <rect x="50" y="44" width="66" height="8" rx="4" fill="#2563EB"/>
+    <circle cx="38" cy="68" r="4" fill="#C9D4E6"/>
+    <rect x="50" y="64" width="52" height="8" rx="4" fill="#9FB3D1"/>
+    <circle cx="38" cy="88" r="4" fill="#2563EB"/>
+    <rect x="50" y="84" width="44" height="8" rx="4" fill="#2563EB" fill-opacity="0.5"/>
+    <circle cx="38" cy="108" r="4" fill="#C9D4E6"/>
+    <rect x="50" y="104" width="58" height="8" rx="4" fill="#9FB3D1"/>
+    <path d="M84 140 h28 l6 22 h-40 z" fill="#16294A"/>
+    <rect x="58" y="162" width="84" height="9" rx="4.5" fill="#16294A"/>
+  </g>
+  <text x="226" y="104" font-size="50" font-weight="800" letter-spacing="-1.5" fill="#0F2A4A">LoadBoard<tspan fill="#2563EB">Pro</tspan></text>
+  <text x="229" y="136" font-size="16" font-weight="600" letter-spacing="3.5" fill="#64748B">FREIGHT DISPATCH PLATFORM</text>
+</svg>

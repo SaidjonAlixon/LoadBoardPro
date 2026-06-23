@@ -1,0 +1,621 @@
+import { useCallback, useMemo, useState, Fragment } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import type { DriverTodayBlock, DriverChipFilter, DispatcherDriverGroup } from "@/lib/drivers-today";
+import { filterStatusboardSections } from "@/lib/drivers-today";
+import {
+  DRIVER_BOARD_STATUSES,
+  DRIVER_BOARD_STATUS_I18N,
+  DRIVER_BOARD_STATUS_STYLES,
+  DRIVER_BOARD_STATUS_COLORS,
+  resolveDriverBoardStatus,
+  type DriverBoardStatus,
+  isDriverBoardStatus,
+} from "@/lib/driver-board-status";
+import { useI18n } from "@/lib/i18n";
+import { invalidateDriverQueries } from "@/lib/invalidate-driver-queries";
+import { canEditDriverBoardRow } from "@/lib/can-edit-driver-board-row";
+import { getThisWeekStart } from "@/lib/date-range";
+import { cn } from "@/lib/utils";
+import { parseCityState, formatLocationForEdit } from "@/components/sheet-editable-cell";
+import { isLoadDispatcherLocked } from "@/lib/load-statuses";
+import { isPlaceholderCity } from "@/lib/validate-dispatcher-load";
+import {
+  datetimeLocalDatePart,
+  datetimeLocalToIso,
+  formatScheduledDateTime,
+  toDatetimeLocalValue,
+} from "@/lib/scheduled-datetime";
+import { toast } from "sonner";
+
+const DRIVER_TYPE_KEYS: Record<string, string> = {
+  OO: "drivers.ooShort",
+  CD: "drivers.cdShort",
+  Lease: "drivers.lease",
+};
+
+const DRIVER_TYPE_STYLES: Record<string, string> = {
+  OO: "bg-blue-100 text-blue-800 border border-blue-200 dark:bg-blue-950/50 dark:text-blue-200 dark:border-blue-800",
+  CD: "bg-green-100 text-green-800 border border-green-200 dark:bg-green-950/50 dark:text-green-200 dark:border-green-800",
+  Lease: "bg-purple-100 text-purple-800 border border-purple-200 dark:bg-purple-950/50 dark:text-purple-200 dark:border-purple-800",
+};
+
+const COL_COUNT = 13;
+
+function cityState(city: string, state: string): string {
+  if (!city || city === "-") return "";
+  return state && state !== "-" ? `${city}, ${state}` : city;
+}
+
+function formatScheduledRange(
+  puScheduledAt?: string | null,
+  delScheduledAt?: string | null,
+  puDate?: string | null,
+  delDate?: string | null,
+  formatDateTime?: (d: string | Date) => string,
+  formatDate?: (d: string) => string,
+): string {
+  const pu = formatScheduledDateTime(puScheduledAt, puDate, formatDateTime, formatDate);
+  const del = formatScheduledDateTime(delScheduledAt, delDate, formatDateTime, formatDate);
+  if (!pu) return "";
+  if (!del || del === pu) return pu;
+  return `${pu} – ${del}`;
+}
+
+type DriverStatusboardProps = {
+  filter: DriverChipFilter;
+  driverFilterId?: string | null;
+  dispatcherFilterKey?: string | null;
+  drivers: DriverTodayBlock[];
+  groups?: DispatcherDriverGroup[];
+  weekLabel: string;
+  weekStart: string;
+  groupByDispatcher: boolean;
+  editorUserId?: string | null;
+  editorRole?: string | null;
+};
+
+export function DriverStatusboard({
+  filter,
+  driverFilterId = null,
+  dispatcherFilterKey = null,
+  drivers,
+  groups,
+  weekLabel,
+  weekStart,
+  groupByDispatcher,
+  editorUserId,
+  editorRole,
+}: DriverStatusboardProps) {
+  const { t, formatDate } = useI18n();
+  const formatDateTime = useCallback(
+    (d: string | Date) =>
+      new Date(d).toLocaleString(undefined, {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    [],
+  );
+  const qc = useQueryClient();
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [statusOverrides, setStatusOverrides] = useState<Record<string, DriverBoardStatus>>({});
+
+  const patchDriver = useCallback(
+    async (driverId: string, body: Record<string, unknown>) => {
+      setSavingKey(`driver:${driverId}`);
+      try {
+        const res = await fetch(`/api/drivers/${driverId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error((err as { error?: string }).error ?? "save failed");
+        }
+        void invalidateDriverQueries(qc);
+        return true;
+      } catch {
+        toast.error(t("statusboard.saveFailed"));
+        return false;
+      } finally {
+        setSavingKey(null);
+      }
+    },
+    [qc, t],
+  );
+
+  const patchLoad = useCallback(
+    async (loadId: string, body: Record<string, unknown>) => {
+      setSavingKey(`load:${loadId}`);
+      try {
+        const res = await fetch(`/api/loads/${loadId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error((err as { error?: string }).error ?? "save failed");
+        }
+        await Promise.all([
+          invalidateDriverQueries(qc),
+          qc.invalidateQueries({ queryKey: ["/api/loads"] }),
+          qc.invalidateQueries({ queryKey: ["/api/analytics"] }),
+        ]);
+        return true;
+      } catch {
+        toast.error(t("statusboard.loadSaveFailed"));
+        return false;
+      } finally {
+        setSavingKey(null);
+      }
+    },
+    [qc, t],
+  );
+
+  const sections = useMemo(
+    () =>
+      filterStatusboardSections(
+        drivers,
+        groups,
+        groupByDispatcher,
+        filter,
+        driverFilterId,
+        dispatcherFilterKey,
+      ),
+    [groupByDispatcher, groups, drivers, filter, driverFilterId, dispatcherFilterKey],
+  );
+
+  const totalRows = sections.reduce((n, s) => n + s.drivers.length, 0);
+
+  const hdr = cn(
+    "px-2 py-2.5 text-[10px] font-bold uppercase tracking-wide whitespace-nowrap sticky top-0 z-20",
+    "text-foreground bg-muted/90 border border-border",
+    "dark:bg-slate-800 dark:text-slate-100 dark:border-slate-700",
+  );
+  const cell = cn(
+    "px-2 py-1.5 text-xs border border-border bg-card text-foreground align-middle",
+    "dark:bg-slate-900/60 dark:text-slate-100 dark:border-slate-700",
+  );
+  const inputCls =
+    "w-full bg-transparent border-0 outline-none text-xs p-0 text-foreground placeholder:text-muted-foreground dark:placeholder:text-slate-500";
+
+  const renderRow = (
+    block: DriverTodayBlock,
+    section: { dispatcherId: string | null },
+  ) => {
+    const load = block.loads[0];
+    const d = block.driver;
+    const boardStatus = (statusOverrides[d.id]
+      ?? resolveDriverBoardStatus(d.boardStatus)) as DriverBoardStatus;
+    const rowCanEdit = canEditDriverBoardRow({
+      editorRole,
+      editorUserId,
+      sectionDispatcherId: section.dispatcherId,
+      groupByDispatcher,
+    });
+    const loadCanEdit =
+      rowCanEdit &&
+      !!load &&
+      !(
+        editorRole === "dispatcher" &&
+        load.status &&
+        isLoadDispatcherLocked(load.status)
+      );
+    const rowSaving = savingKey === `driver:${d.id}` || (load && savingKey === `load:${load.id}`);
+
+    const loadInputClass = cn(inputCls, "min-w-[72px]");
+
+    return (
+      <tr
+        key={d.id}
+        className={cn(
+          "transition-colors",
+          rowCanEdit
+            ? "hover:bg-muted/50 dark:hover:bg-slate-800/70"
+            : "bg-muted/10 dark:bg-slate-900/40",
+          rowSaving && "opacity-60",
+        )}
+      >
+        <td className={cn(cell, "tabular-nums whitespace-nowrap min-w-[88px]")}>
+          {d.truckNumber ?? t("common.emDash")}
+        </td>
+        <td className={cn(cell, "font-semibold text-foreground min-w-[140px]")}>
+          {d.fullName}
+        </td>
+        <td className={cn(cell, "tabular-nums whitespace-nowrap")}>{d.phone ?? t("common.emDash")}</td>
+        <td className={cell}>
+          <span
+            className={cn(
+              "inline-block rounded-md px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap",
+              DRIVER_TYPE_STYLES[d.driverType] ?? "bg-muted text-muted-foreground border border-border",
+            )}
+          >
+            {t(DRIVER_TYPE_KEYS[d.driverType] ?? d.driverType)}
+          </span>
+        </td>
+        <td className={cn(cell, "text-right tabular-nums font-medium")} onClick={(e) => e.stopPropagation()}>
+          <input
+            className={cn(inputCls, "min-w-[60px] text-right tabular-nums")}
+            defaultValue={d.odometer != null ? String(d.odometer) : ""}
+            placeholder={t("common.emDash")}
+            disabled={!rowCanEdit}
+            inputMode="numeric"
+            pattern="[0-9]*"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                (e.target as HTMLInputElement).blur();
+                return;
+              }
+              if (
+                e.key.length === 1 &&
+                !/^\d$/.test(e.key) &&
+                !e.ctrlKey &&
+                !e.metaKey
+              ) {
+                e.preventDefault();
+              }
+            }}
+            onPaste={(e) => {
+              const text = e.clipboardData.getData("text");
+              if (!/^\d*$/.test(text.trim())) e.preventDefault();
+            }}
+            onInput={(e) => {
+              const el = e.currentTarget;
+              const digits = el.value.replace(/\D/g, "");
+              if (el.value !== digits) el.value = digits;
+            }}
+            onBlur={(e) => {
+              const raw = e.target.value.trim();
+              if (raw === "") {
+                if (d.odometer != null) void patchDriver(d.id, { odometer: null });
+                return;
+              }
+              const next = Number(raw);
+              if (!Number.isFinite(next) || !/^\d+$/.test(raw)) {
+                e.target.value = d.odometer != null ? String(d.odometer) : "";
+                return;
+              }
+              if (next === (d.odometer ?? null)) return;
+              void patchDriver(d.id, { odometer: next });
+            }}
+          />
+        </td>
+        <td className={cn(cell, "font-bold whitespace-nowrap min-w-[72px]")} onClick={(e) => e.stopPropagation()}>
+          {load ? (
+            loadCanEdit ? (
+              <input
+                className={cn(loadInputClass, "font-bold")}
+                defaultValue={load.loadNumber ?? ""}
+                placeholder={t("common.emDash")}
+                onBlur={(e) => {
+                  const v = e.target.value.trim();
+                  if (v === (load.loadNumber ?? "")) return;
+                  if (!v) {
+                    e.target.value = load.loadNumber ?? "";
+                    return;
+                  }
+                  void patchLoad(load.id, { loadNumber: v });
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                }}
+              />
+            ) : (
+              load.loadNumber ?? t("common.emDash")
+            )
+          ) : (
+            t("common.emDash")
+          )}
+        </td>
+        <td className={cn(cell, "min-w-[120px]")} onClick={(e) => e.stopPropagation()}>
+          {load ? (
+            loadCanEdit ? (
+              <input
+                className={loadInputClass}
+                defaultValue={formatLocationForEdit(load.originCity, load.originState)}
+                placeholder={t("common.emDash")}
+                onBlur={(e) => {
+                  const v = e.target.value.trim();
+                  const current = formatLocationForEdit(load.originCity, load.originState);
+                  if (v === current) return;
+                  const { city, state } = parseCityState(v);
+                  if (!city.trim()) {
+                    e.target.value = current;
+                    return;
+                  }
+                  void patchLoad(load.id, {
+                    originCity: city.trim(),
+                    originState: state.trim() || "-",
+                  });
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                }}
+              />
+            ) : (
+              isPlaceholderCity(load.originCity)
+                ? t("common.emDash")
+                : cityState(load.originCity, load.originState) || t("common.emDash")
+            )
+          ) : (
+            t("common.emDash")
+          )}
+        </td>
+        <td className={cn(cell, "min-w-[120px]")} onClick={(e) => e.stopPropagation()}>
+          {load ? (
+            loadCanEdit ? (
+              <input
+                className={loadInputClass}
+                defaultValue={formatLocationForEdit(load.destCity, load.destState)}
+                placeholder={t("common.emDash")}
+                onBlur={(e) => {
+                  const v = e.target.value.trim();
+                  const current = formatLocationForEdit(load.destCity, load.destState);
+                  if (v === current) return;
+                  const { city, state } = parseCityState(v);
+                  if (!city.trim()) {
+                    e.target.value = current;
+                    return;
+                  }
+                  void patchLoad(load.id, {
+                    destCity: city.trim(),
+                    destState: state.trim() || "-",
+                  });
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                }}
+              />
+            ) : (
+              isPlaceholderCity(load.destCity)
+                ? t("common.emDash")
+                : cityState(load.destCity, load.destState) || t("common.emDash")
+            )
+          ) : (
+            t("common.emDash")
+          )}
+        </td>
+        <td className={cn(cell, "whitespace-nowrap text-[11px]")} onClick={(e) => e.stopPropagation()}>
+          {load ? (
+            loadCanEdit ? (
+              <div className="flex flex-col gap-1 min-w-[148px]">
+                <input
+                  type="datetime-local"
+                  className={cn(loadInputClass, "dark:[color-scheme:dark]")}
+                  defaultValue={toDatetimeLocalValue(load.puScheduledAt, load.puDate)}
+                  title={t("statusboard.pickupTime")}
+                  onBlur={(e) => {
+                    const v = e.target.value;
+                    if (!v) return;
+                    const current = toDatetimeLocalValue(load.puScheduledAt, load.puDate);
+                    if (v === current) return;
+                    void patchLoad(load.id, {
+                      puScheduledAt: datetimeLocalToIso(v),
+                      puDate: datetimeLocalDatePart(v),
+                    });
+                  }}
+                />
+                <input
+                  type="datetime-local"
+                  className={cn(loadInputClass, "text-muted-foreground dark:text-slate-400 dark:[color-scheme:dark]")}
+                  defaultValue={toDatetimeLocalValue(load.delScheduledAt, load.delDate)}
+                  title={t("statusboard.deliveryTime")}
+                  onBlur={(e) => {
+                    const v = e.target.value;
+                    if (!v) return;
+                    const current = toDatetimeLocalValue(load.delScheduledAt, load.delDate);
+                    if (v === current) return;
+                    void patchLoad(load.id, {
+                      delScheduledAt: datetimeLocalToIso(v),
+                      delDate: datetimeLocalDatePart(v),
+                    });
+                  }}
+                />
+              </div>
+            ) : (
+              formatScheduledRange(
+                load.puScheduledAt,
+                load.delScheduledAt,
+                load.puDate,
+                load.delDate,
+                formatDateTime,
+                formatDate,
+              )
+            )
+          ) : (
+            t("common.emDash")
+          )}
+        </td>
+        <td
+          className={cell}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <input
+            className={cn(inputCls, "min-w-[80px]")}
+            defaultValue={d.eta ?? ""}
+            placeholder={t("common.emDash")}
+            disabled={!rowCanEdit}
+            onBlur={(e) => {
+              const v = e.target.value.trim();
+              if (v === (d.eta ?? "")) return;
+              void patchDriver(d.id, { eta: v || null });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+          />
+        </td>
+        <td className={cell} onClick={(e) => e.stopPropagation()}>
+          {rowCanEdit ? (
+            <select
+              className={cn(
+                "w-full min-w-[110px] text-xs font-semibold rounded border px-1.5 py-1 cursor-pointer",
+                DRIVER_BOARD_STATUS_STYLES[boardStatus],
+              )}
+              value={boardStatus}
+              onChange={async (e) => {
+                const next = e.target.value;
+                if (!isDriverBoardStatus(next) || next === boardStatus) return;
+                const prev = boardStatus;
+                setStatusOverrides((s) => ({ ...s, [d.id]: next }));
+                const ok = await patchDriver(d.id, { boardStatus: next });
+                if (!ok) {
+                  setStatusOverrides((s) => ({ ...s, [d.id]: prev }));
+                } else {
+                  setStatusOverrides((s) => {
+                    const copy = { ...s };
+                    delete copy[d.id];
+                    return copy;
+                  });
+                }
+              }}
+            >
+              {DRIVER_BOARD_STATUSES.map((s) => {
+                const c = DRIVER_BOARD_STATUS_COLORS[s];
+                return (
+                  <option
+                    key={s}
+                    value={s}
+                    style={{ backgroundColor: c.bg, color: c.text }}
+                  >
+                    {t(DRIVER_BOARD_STATUS_I18N[s])}
+                  </option>
+                );
+              })}
+            </select>
+          ) : (
+            <span
+              className={cn(
+                "inline-flex w-full min-w-[110px] justify-center rounded border px-1.5 py-1 text-xs font-semibold",
+                DRIVER_BOARD_STATUS_STYLES[boardStatus],
+              )}
+            >
+              {t(DRIVER_BOARD_STATUS_I18N[boardStatus])}
+            </span>
+          )}
+        </td>
+        <td className={cell} onClick={(e) => e.stopPropagation()}>
+          <input
+            className={cn(inputCls, "min-w-[70px]")}
+            defaultValue={d.prebook ?? ""}
+            placeholder={t("common.emDash")}
+            disabled={!rowCanEdit}
+            onBlur={(e) => {
+              const v = e.target.value.trim();
+              if (v === (d.prebook ?? "")) return;
+              void patchDriver(d.id, { prebook: v || null });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+          />
+        </td>
+        <td className={cell} onClick={(e) => e.stopPropagation()}>
+          <input
+            className={cn(inputCls, "min-w-[100px]")}
+            defaultValue={d.boardNote ?? ""}
+            placeholder={t("common.emDash")}
+            disabled={!rowCanEdit}
+            onBlur={(e) => {
+              const v = e.target.value.trim();
+              if (v === (d.boardNote ?? "")) return;
+              void patchDriver(d.id, { boardNote: v || null });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+          />
+        </td>
+      </tr>
+    );
+  };
+
+  return (
+    <div
+      className="mt-4 rounded-xl border-2 border-border bg-card overflow-hidden shadow-sm"
+      data-testid="driver-statusboard"
+    >
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 py-3 border-b border-border bg-muted/30 dark:bg-slate-900/50">
+          <div>
+            <p className="text-sm font-semibold text-foreground">{t("statusboard.title")}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{t("statusboard.subtitle")}</p>
+          </div>
+          <p className="text-xs text-muted-foreground font-medium">
+            {t("statusboard.weekPeriod", { range: weekLabel })}
+            {weekStart === getThisWeekStart() && (
+              <span className="ml-1.5 text-[9px] font-bold uppercase tracking-wide text-green-800 bg-green-100 dark:text-green-200 dark:bg-green-900/50 px-1.5 py-0.5 rounded align-middle">
+                {t("dashboard.weekActive")}
+              </span>
+            )}
+            {totalRows > 0 && (
+              <span className="ml-2 text-foreground">· {totalRows} {t("dashboard.driver").toLowerCase()}(s)</span>
+            )}
+          </p>
+        </div>
+
+        {totalRows === 0 ? (
+          <p className="p-8 text-sm text-center text-muted-foreground">
+            {driverFilterId || dispatcherFilterKey
+              ? t("statusboard.noDriversForFilter")
+              : filter === "all"
+              ? t("dashboard.noDriversToday")
+              : t("statusboard.noDriversWithStatus", {
+                  status: t(DRIVER_BOARD_STATUS_I18N[filter]),
+                })}
+          </p>
+        ) : (
+          <div className="overflow-x-auto max-h-[min(70vh,720px)] overflow-y-auto">
+            <table className="w-full min-w-[1200px] border-collapse text-sm">
+              <thead>
+                <tr>
+                  <th className={cn(hdr, "whitespace-nowrap")}>{t("statusboard.truckNumber")}</th>
+                  <th className={cn(hdr, "text-left")}>{t("statusboard.driverName")}</th>
+                  <th className={hdr}>{t("statusboard.phone")}</th>
+                  <th className={hdr}>{t("statusboard.type")}</th>
+                  <th className={cn(hdr, "text-right")}>{t("statusboard.odometer")}</th>
+                  <th className={hdr}>{t("statusboard.loadId")}</th>
+                  <th className={cn(hdr, "text-left")}>{t("statusboard.origin")}</th>
+                  <th className={cn(hdr, "text-left")}>{t("statusboard.destination")}</th>
+                  <th className={hdr}>{t("statusboard.scheduledTime")}</th>
+                  <th className={hdr}>{t("statusboard.eta")}</th>
+                  <th className={hdr}>{t("statusboard.status")}</th>
+                  <th className={hdr}>{t("statusboard.prebook")}</th>
+                  <th className={cn(hdr, "text-left")}>{t("statusboard.note")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sections.map((section) => (
+                  <Fragment key={section.dispatcherId ?? `section-${section.dispatcherName}`}>
+                    {groupByDispatcher && section.dispatcherName && (
+                      <tr>
+                        <td
+                          colSpan={COL_COUNT}
+                          className={cn(
+                            "px-3 py-2 text-center text-sm font-bold uppercase tracking-wide sticky top-[41px] z-10",
+                            "bg-green-100 text-green-900 border border-green-200",
+                            "dark:bg-green-950/55 dark:text-green-200 dark:border-green-800",
+                          )}
+                        >
+                          {section.dispatcherName === "Unassigned"
+                            ? t("statusboard.unassigned")
+                            : section.dispatcherName}
+                        </td>
+                      </tr>
+                    )}
+                    {section.drivers.map((block) => renderRow(block, section))}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+    </div>
+  );
+}

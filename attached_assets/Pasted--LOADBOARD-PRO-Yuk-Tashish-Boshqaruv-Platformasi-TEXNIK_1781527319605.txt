@@ -1,0 +1,387 @@
+
+🚛
+LOADBOARD PRO
+Yuk Tashish Boshqaruv Platformasi
+TEXNIK VAZIFA (TZ) — v1.0
+
+Loyiha nomi	LoadBoard Pro — Yuk Logistika Platforma
+Hujjat turi	Texnik Vazifa (TZ) / Software Requirements Specification
+Versiya	1.0 (MVP)
+Platforma	Web (React / Next.js) + iOS / Android (React Native)
+Manba	Google Sheets (DELO lodbord v1) — mavjud tizim
+ 
+1. Kirish va Loyiha Maqsadi
+LoadBoard Pro — bu transport va logistika kompaniyalari uchun mo'ljallangan zamonaviy veb va mobil platforma. Loyiha joriy Google Sheets asosidagi (DELO lodbord v1) tizimni to'liq raqamli, multi-foydalanuvchi, real-vaqt boshqaruv platformasiga ko'chirish maqsadini ko'zlaydi.
+
+1.1 Asosiy Muammolar (Joriy Google Sheets)
+•	Bir vaqtda ko'p foydalanuvchi tahrirlashda konfliktlar yuzaga keladi
+•	Ma'lumotlar hajmi oshganda (100+ yuk/hafta) sezilarli tormozlanish kuzatiladi
+•	Mobil qurilmalardan foydalanish noqulay — mayda hujayralarga tegish qiyin
+•	Rol asosida ruxsat chegaralash imkonsiz — barchasi barcha ma'lumotlarni ko'ra oladi
+•	Avtomatik xabar berish va bildirishnomalar yo'q
+•	Tahlil va KPI grafiklari qo'lda hisoblanadi, real-vaqtda yangilanmaydi
+•	Audit trail — kim, qachon qanday o'zgartirdi — kuzatib bo'lmaydi
+
+1.2 Loyiha Maqsadlari
+•	Yagona, markazlashgan ma'lumotlar bazasi (real-vaqt sinxronizatsiya)
+•	Rol asosida kirish huquqlari (Admin / Dispatcher / Accounting / Driver)
+•	Mobil-first interfeys — haydovchilar telefondan yukni ko'ra oladi
+•	Avtomatik KPI hisoblash va dispetcher reytingi
+•	Buxgalteriya uchun alohida interfeys (Invoice, Broker Paid, Diff qizil signal)
+•	Push bildirishnomalar: yuk holati o'zgarganda, to'lov kelmasa va h.k.
+ 
+2. Foydalanuvchilar va Rollar
+Tizim 4 ta asosiy rol asosida ishlaydi. Har bir rol faqat o'z vakolat doirasidagi ekranlar va ma'lumotlarga kirish huquqiga ega.
+
+Rol	Ruxsatlar darajasi	Ko'ra oladigan modullar	Tahrirlash
+👑 Admin	To'liq kirish	Barcha modullar, sozlamalar, foydalanuvchi boshqaruvi	Hammasi
+📋 Dispatcher	O'rtacha	O'z yuklari, Haydovchilar, KPI, Reyting	Yuklar (o'ziniki)
+💼 Accounting	Cheklangan	Faqat moliyaviy ustunlar: Invoice, Broker Paid, Diff	Moliya maydoni
+🚛 Driver	Minimal	O'z yuklari: PU/DEL sanasi, manzil, status	Faqat status
+
+2.1 Autentifikatsiya
+•	Email + parol orqali kirish (JWT token)
+•	2FA (Ikki bosqichli tasdiq) — Admin uchun majburiy
+•	Sessiya muddati: 8 soat (haydovchi uchun 24 soat)
+•	Parolni tiklash — email orqali
+•	Bitta akkaunt, bir vaqtda 2 ta qurilmadan kirish (mobil + web)
+ 
+3. Ma'lumotlar Bazasi Arxitekturasi
+Tizim relyatsion ma'lumotlar bazasida (PostgreSQL) quriladi. Quyida asosiy jadvallar va ularning maydonlari keltirilgan.
+
+3.1 drivers — Haydovchilar jadvali
+Maydon	Turi	Cheklov	Tavsif
+id	UUID	PK, NOT NULL	Birlamchi kalit
+full_name	VARCHAR(120)	NOT NULL	To'liq ismi
+driver_type	ENUM	O/O | C/D | Lease	Haydovchi turi
+phone	VARCHAR(20)	UNIQUE	Telefon raqami
+email	VARCHAR(180)	UNIQUE, NULL	Elektron pochta
+truck_number	VARCHAR(20)	NULL	Trak raqami
+is_active	BOOLEAN	DEFAULT true	Faol / Arxiv holati
+created_at	TIMESTAMP	DEFAULT now()	Qo'shilgan sana
+
+3.2 loads — Yuklar jadvali (asosiy)
+Maydon	Turi	Cheklov	Tavsif
+id	UUID	PK	Birlamchi kalit
+load_number	VARCHAR(50)	UNIQUE, NOT NULL	Broker yuk raqami (Load #)
+driver_id	UUID	FK → drivers	Haydovchi ID
+dispatcher_id	UUID	FK → users	Dispetcher ID
+broker_id	UUID	FK → brokers	Broker ID
+pu_date	DATE	NOT NULL	Yuk olish sanasi
+del_date	DATE	NOT NULL	Yetkazib berish sanasi
+origin_city	VARCHAR(100)	NOT NULL	Chiqish shahri
+origin_state	CHAR(2)	NOT NULL	Chiqish shtati (TX, CA...)
+dest_city	VARCHAR(100)	NOT NULL	Manzil shahri
+dest_state	CHAR(2)	NOT NULL	Manzil shtati
+mileage	DECIMAL(8,1)	NOT NULL	Masofa (mil)
+rate	DECIMAL(10,2)	NOT NULL	Kelishilgan narx ($)
+rpm	DECIMAL(6,4)	GENERATED (rate/mileage)	Rate per mile (avtomatik)
+status	ENUM	Booked|Picked Up|Delivered|Canceled	Yuk holati
+reimbursement	DECIMAL(10,2)	DEFAULT 0	Qo'shimcha qoplama ($)
+dispatch_notes	TEXT	NULL	Dispetcher izohi
+invoiced_amount	DECIMAL(10,2)	NULL	Invoys qilingan summa ($)
+broker_paid	DECIMAL(10,2)	NULL	Broker to'lagan summa ($)
+notes	TEXT	NULL	Umumiy izoh (Accounting)
+week_start	DATE	NOT NULL	Hafta boshlanish sanasi (Mon)
+created_at	TIMESTAMP	DEFAULT now()	Kiritilgan vaqt
+updated_at	TIMESTAMP	AUTO	Oxirgi o'zgartirilgan vaqt
+
+Hisoblangan maydonlar (virtual, bazaga saqlanmaydi):
+•	i_r_diff = invoiced_amount − (rate + reimbursement)  →  Invoys to'g'riligini tekshiradi
+•	b_i_diff = broker_paid − invoiced_amount  →  Broker to'liq to'ladimi tekshiradi
+Agar b_i_diff < 0 bo'lsa, UI da qizil rang bilan ko'rsatiladi va buxgalterga bildirishnoma yuboriladi.
+
+3.3 Qo'shimcha jadvallar
+Jadval nomi	Vazifasi
+brokers	Broker kompaniyalar ro'yxati (nom, MC raqami, kontakt, manzil)
+users	Tizim foydalanuvchilari (rol, email, parol hash, 2FA)
+reimbursements	Qo'shimcha to'lovlar detallari: toll, lumper, layover, detention (har biri alohida qator)
+audit_log	Barcha o'zgarishlar tarixi: kim, qachon, qaysi maydon, qanday o'zgartirildi
+notifications	Bildirishnomalar: foydalanuvchi_id, text, ko'rildi/ko'rilmadi, sana
+weekly_summaries	Keshlanmis haftalik KPI (performance uchun, jadvalga yoziladi)
+ 
+4. Funktsional Modullar
+4.1 Dashboard (Bosh Sahifa)
+Tizimga kirish bilan ochiluvchi asosiy analitika paneli. Rol asosida ko'rsatiladigan ma'lumotlar farqlanadi.
+
+4.1.1 KPI Kartalar (Yuqori blok)
+💰 TOTAL GROSS
+$0.00
+Umumiy daromad	🛣️ TOTAL MILES
+0 mi
+Jami masofa	📉 AVG RPM
+$0.00
+O'rtacha RPM
+🚚 ACTIVE LOADS
+0
+Faol yuklar	🏢 BROKER PAID
+$0.00
+Broker to'lagan	⚠️ UNPAID DIFF
+$0.00
+To'lanmagan farq
+
+4.1.2 Haftalik/Davriy Filtrlash Paneli
+•	Oy / Hafta / Maxsus davr (Date Range) — tugmalar bilan tanlash
+•	Dispetcher filtri: bitta dispetcherning ko'rsatkichlarini alohida ko'rish
+•	Haydovchi filtri: bitta haydovchining statistikasi
+•	Filtr qo'llanilganda barcha KPI va jadvallar avtomatik yangilanadi
+•	Filtrni saqlash (Preset sifatida)
+◦	"Bu hafta", "O'tgan hafta", "Bu oy" — oldindan saqlangan presetlar
+
+4.1.3 Dispetcher Reytingi (Gamification)
+Bu blok tizimning asosiy motivatsiya vositasi. Barcha dispetcherlar natijalariga qarab reytingda ko'rsatiladi.
+
+#	Dispetcher	Gross	Miles	Loads	Avg RPM	KPI Ball
+🥇 1	Sardor A.	$48,200	12,400 mi	22	$3.89	187.5
+🥈 2	Bobur T.	$41,500	11,100 mi	19	$3.74	155.2
+🥉 3	Kamol D.	$38,900	10,800 mi	17	$3.60	140.0
+
+KPI Formula: (Gross Per Driver × Avg RPM) ÷ 1000  →  Eng yuqori ball = 1-o'rin
+
+4.1.4 Status Taqsimoti (Donut Chart)
+•	Booked (Biriktirilgan) — ko'k rang
+•	Picked Up (Olingan) — sariq rang
+•	Delivered (Yetkazilgan) — yashil rang
+•	Canceled (Bekor qilingan) — qizil rang
+ 
+4.2 Yuklar Moduli (Loads)
+Tizimning asosiy moduli. Barcha yuklar yagona jadvalda saqlanadi va kuchli filtrlash hamda qidiruv imkoniyatiga ega.
+
+4.2.1 Yuklar Ro'yxati (List View)
+•	Ustunlar sozlanadi: foydalanuvchi o'zi ko'rinadigan ustunlarni tanlaydi
+•	Saralash (Sort): har bir ustun bo'yicha o'sish/kamayish tartibida
+•	Tezkor qidiruv: Load #, Broker, Haydovchi, Shahar bo'yicha real-vaqt qidiruv
+•	Holat bo'yicha rang kodlash:
+◦	🔵 Booked — ko'k chiziq
+◦	🟡 Picked Up — sariq fon
+◦	🟢 Delivered — yashil fon
+◦	🔴 Canceled — qizil matn, chizilgan
+◦	⚠️ B-I Diff manfiy — qizil qator, bildirishnoma belgisi
+•	Eksport: Excel (.xlsx) va PDF formatida yuklab olish
+•	Ommaviy amallar (Bulk Actions): tanlangan yuk(lar)ga status qo'yish
+
+4.2.2 Yuk Qo'shish / Tahrirlash Formi
+Modal oynada yoki alohida sahifada ochiladi. Maydonlar bo'limlarga ajratilgan:
+
+Bo'lim	Maydonlar
+📋 Asosiy	Load # (avto-prefiks), Haydovchi (dropdown), Dispetcher (avto: joriy user)
+🏢 Broker	Broker (dropdown qidiruv), Broker Load ID
+📍 Manzil	PU Date, Origin Shahar + Shtat, DEL Date, Destination Shahar + Shtat
+💰 Moliya	Mileage (mil), Rate ($), RPM (avtomatik), Reimbursement ($)
+📝 Izoh	Dispatch Notes, Status dropdown, Notes (Accounting)
+🧾 Accounting	Invoiced Amount ($), Broker Paid ($) — faqat Accounting roli
+
+•	Saqlashda avtomatik hisoblash: RPM, I-R+R Diff, B-I Diff
+•	B-I Diff manfiy bo'lsa — Accounting foydalanuvchisiga avtomatik xabar
+•	Majburiy maydonlar validatsiyasi — bo'sh qoldirilsa forma yuborilmaydi
+•	Google Maps integratsiyasi — Origin/Destination maydoni manzilarni avtomatik taklif qiladi
+•	Mileage avtomatik hisoblash — Google Maps Distance Matrix API orqali (ixtiyoriy override)
+
+4.2.3 Yuk Kartasi (Card View — Mobil)
+Mobil qurilmalarda ro'yxat o'rniga karta ko'rinishi ishlatiladi. Har bir karta quyidagilarni ko'rsatadi:
+•	Yuqorida: Load # + Status badge (rangli)
+•	O'rtada: Origin → Destination (katta matn), Mileage, PU/DEL sana
+•	Pastda: Rate ($), RPM, Broker nomi
+•	Tugmalar: [Status o'zgartirish] [Batafsil ko'rish] [Izoh qo'shish]
+ 
+4.3 Buxgalteriya Moduli (Accounting)
+Faqat Accounting va Admin rollari uchun. Yetkazilgan, lekin to'lovi yopilmagan yuk(lar)ni kuzatish uchun mo'ljallangan.
+
+4.3.1 Accounting Dashboard
+⚠️  DIQQAT: B-I Diff manfiy bo'lgan barcha yuklar avtomatik "Attention" bo'limiga tushadi — Buxgalter muammodan darhol xabardor bo'ladi!
+
+Metrika	Tavsif
+📤 Total Invoiced	Invoys qilingan, lekin to'lov kutilayotgan jami summa
+✅ Broker Paid (bu hafta)	Joriy haftada kelgan to'lovlar jami
+❌ Outstanding (to'lanmagan)	Yetkazilgan + Invoys qilingan, lekin Broker Paid bo'sh qatorlar jami
+⚠️ Diff Muammolari	B-I Diff < 0 yoki I-R+R Diff ≠ 0 bo'lgan yuklar soni
+
+4.3.2 Accounting Jadvali (Filtrlanadi)
+•	Faqat "Delivered" statusidagi yuklar ko'rsatiladi
+•	Ustunlar: Load #, Driver, Broker, Rate, Reimb, Invoiced, I-R+R Diff, Broker Paid, B-I Diff, Notes
+•	Qizil qatorlar: B-I Diff < 0 (broker kam to'lagan)
+•	Sariq qatorlar: Invoiced Amount bo'sh (hali invoys qilinmagan)
+•	Bulk Edit: bir nechta qatorni tanlash va Broker Paid ni bir vaqtda kiritish
+•	"To'landi" tugmasi: B-I Diff = 0 bo'lgan qatorni yashil rang bilan ko'rsatadi
+ 
+4.4 Haydovchilar Moduli (Drivers)
+4.4.1 Haydovchilar Ro'yxati
+•	Ustunlar: #, Ism, Tur (O/O / C/D / Lease), Telefon, Trak raqami, Holat (Faol/Arxiv)
+•	Qidiruv: Ism va Trak raqami bo'yicha
+•	Filtr: Faqat O/O yoki faqat C/D ko'rish
+
+4.4.2 Haydovchi Profili (Batafsil)
+•	Shaxsiy ma'lumotlar: Ism, Telefon, Email, Trak raqami, Tur
+•	Statistika kartasi: Jami yuklar, Jami Gross, O'rtacha RPM, Oxirgi faoliyat sanasi
+•	Yuklar tarixi: o'sha haydovchining barcha yuklari jadvalda
+•	Haftalik Earnings grafigi: oxirgi 12 hafta uchun bar chart
+•	Dokumentlar: Haydovlik guvohnomasi, CDL, Insurance raqami (fayl upload)
+ 
+4.5 Haftalik Ko'rinish (Weekly View)
+Joriy Google Sheets dagi haftalik varaqlar mantiqini saqlab qoluvchi ekran. Foydalanuvchi xuddi hozirgi tizim kabi hafta bo'yicha ma'lumotlarni ko'radi.
+
+4.5.1 Hafta Tanlash
+•	Haftalar ro'yxati: "06.10 – 06.16", "06.17 – 06.23" — chapda vertikal panel
+•	Joriy hafta avtomatik ochiladi
+•	Yangi hafta qo'shish — tugma bilan (haftaning birinchi dushanbasi asosida)
+
+4.5.2 Haydovchi Bloklari
+•	Har bir haydovchi alohida "Karta"da — xuddi Sheets dagi blok kabi
+•	Karta sarlavhasi: Haydovchi ismi, Tur (O/O / C/D), Jami Gross (haftalik), Jami Miles
+•	Karta ichida: o'sha haydovchining shu haftadagi yuklari jadval ko'rinishida
+•	Yuk qo'shish tugmasi: "＋ Load" — to'g'ridan-to'g'ri o'sha haydovchi uchun
+•	Agar haydovchi bu haftada yuk bajargan bo'lsa — karta yashil chegarali
+•	Haftalik Totals qatori — har bir haydovchi kartasining pastida avtomatik hisobi
+
+4.5.3 Haftalik KPI Paneli
+•	Total Gross, Total Mileage, Avg RPM, Active Drivers, Total Reimbursement
+•	Driver Types taqsimoti: Nechta O/O, nechta C/D shu haftada ishladi
+•	Gross Per Driver o'rtachasi
+ 
+4.6 Bildirishnomalar Moduli (Notifications)
+Trigger (Sabab)	Bildirishnoma mazmuni va kimga
+Yuk "Delivered" statusiga o'tdi	Accounting: "Load #XXXX yetkazildi, invoys qilish vaqti"
+Invoiced Amount kiritildi	Admin: "Load #XXXX invoys qilindi: $X,XXX"
+B-I Diff < 0 bo'ldi	Accounting + Admin: "⚠️ Broker kam to'ladi: Load #XXXX, farq: $XX"
+Broker Paid kiritildi (to'liq)	Admin: "✅ Load #XXXX to'liq to'landi"
+Yuk 3 kun "Booked"da qolsa	Dispatcher: "Load #XXXX hali "Picked Up" emas — tekshiring"
+Hafta boshlanishi (Dushanba 08:00)	Barcha dispetcherlarga: "Yangi hafta boshlandi — yuklar kiriting"
+Haydovchi 7 kun yuksiz qolsa	Admin + tegishli Dispatcher: "Driver [ism] 7 kun bekor"
+
+•	In-app bildirishnomalar (qo'ng'iroq belgisi, badge counter)
+•	Email bildirishnomalar (konfiguratsiya qilinadigan)
+•	SMS (ixtiyoriy — Twilio integratsiyasi)
+ 
+5. Texnik Arxitektura
+
+Qatlam	Texnologiya (Tavsiya)	Muqobil
+Frontend (Web)	Next.js 14 (App Router) + TypeScript	React + Vite
+UI Kutubxona	shadcn/ui + Tailwind CSS	Material UI, Ant Design
+Grafiklar	Recharts yoki ApexCharts	Chart.js
+Mobile	React Native (Expo) — iOS + Android	Flutter
+Backend (API)	Node.js + Express yoki NestJS (REST/GraphQL)	FastAPI (Python)
+Ma'lumotlar bazasi	PostgreSQL 15	MySQL 8
+ORM	Prisma ORM	TypeORM, Drizzle
+Auth	NextAuth.js / Passport.js + JWT	Auth0, Supabase Auth
+Real-vaqt	Socket.IO yoki Supabase Realtime	Pusher
+Fayl saqlash	AWS S3 yoki Cloudflare R2	Supabase Storage
+Hosting (Backend)	Railway, Render yoki AWS EC2	DigitalOcean
+Hosting (Frontend)	Vercel yoki Netlify	AWS Amplify
+Email	Resend yoki SendGrid	Nodemailer + SMTP
+SMS	Twilio (ixtiyoriy)	—
+Maps / Mileage	Google Maps Platform (Distance Matrix API)	Mapbox
+
+5.1 API Arxitekturasi
+•	RESTful API — JSON format, versiyalash: /api/v1/...
+•	Barcha so'rovlarda JWT Bearer token majburiy
+•	Rate Limiting: 100 so'rov/daqiqa (per user)
+•	HTTPS majburiy, HTTP → avtomatik yo'naltirish
+•	CORS: faqat ruxsat etilgan domenlar
+
+Asosiy API Endpoint'lar:
+Metod	URL	Tavsif	Ruxsat
+GET	/api/v1/loads	Yuklar ro'yxati (filter, sort, pagination)	Admin, Dispatcher, Accounting
+POST	/api/v1/loads	Yangi yuk qo'shish	Admin, Dispatcher
+GET	/api/v1/loads/:id	Bitta yuk ma'lumotlari	Barcha rollar
+PATCH	/api/v1/loads/:id	Yuk ma'lumotini yangilash	Admin, Dispatcher, Accounting
+DELETE	/api/v1/loads/:id	Yukni o'chirish (soft delete)	Faqat Admin
+GET	/api/v1/drivers	Haydovchilar ro'yxati	Admin, Dispatcher
+GET	/api/v1/analytics/kpi	KPI metrikalar (filtrlangan)	Admin, Dispatcher
+GET	/api/v1/analytics/ranking	Dispetcher reytingi	Admin, Dispatcher
+GET	/api/v1/weekly/:week_start	Haftaga tegishli barcha yuklar	Barcha rollar
+POST	/api/v1/export/xlsx	Excel eksport generatsiyasi	Admin, Accounting
+ 
+6. UI/UX Talablari
+6.1 Dizayn Tizimi
+Element	Qiymat	Izoh
+Asosiy rang	#1A3C5E (To'q ko'k)	Header, sidebar, tugmalar
+Aktsent rang	#2196F3 (Yorqin ko'k)	Link, highlight, badge
+Muvaffaqiyat	#2E7D32 (Yashil)	Delivered, To'landi
+Ogohlantirish	#E65100 (To'q sariq)	Picked Up, RPM past
+Xato/Muammo	#C62828 (Qizil)	Diff manfiy, Canceled
+Asosiy shrift	Inter yoki DM Sans	Google Fonts — bepul
+Borderradius	8px (karta), 4px (jadval)	Zamonaviy, yumshoq
+Responsive	Mobile-first, 320px–1440px+	Tailwind sm/md/lg breakpoints
+
+6.2 Navigatsiya
+•	Yon panel (Sidebar) — Desktop: har doim ko'rindi; Mobil: pastki tab bar
+•	Sidebar elementlari: Dashboard | Yuklar | Haftalik | Haydovchilar | Buxgalteriya | Hisobotlar | Sozlamalar
+•	Bildirishnomalar qo'ng'iroq belgisi — header o'ng yuqorida, badge counter
+•	Foydalanuvchi avatari — o'ng yuqori burchak: profil, chiqish
+•	Breadcrumb navigatsiyasi — batafsil sahifalarda
+
+6.3 Mobil Talablar (Prioritet)
+•	Haydovchilar asosan mobil ishlatadi — mobil interfeys alohida e'tiborga olinadi
+•	Karta ko'rinishida yuklar — keng ustunli jadval o'rniga
+•	Katta "Status O'zgartirish" tugmasi — bosh barmoq oson yetadigan joylashtiriladi
+•	Swipe gestures: chapga swipe — tahrirlash, o'ngga — o'chirish (driver uchun faqat tahrirlash)
+•	Offline mode: haydovchi internet bo'lmaganda ham so'nggi yuklarini ko'ra oladi (PWA Cache)
+•	Push notification — iOS/Android nativ bildirishnomalar (React Native)
+ 
+7. Rivojlanish Bosqichlari (Roadmap)
+
+Bosqich	Muddat	Tarkib	Holat
+Phase 1	Haftalar 1–6	MVP: Auth, Yuklar CRUD, Haftalik ko'rinish, Asosiy Dashboard (Web)	🔨 Rejada
+Phase 2	Haftalar 7–12	Accounting moduli, KPI reyting, Bildirishnomalar, Eksport (XLSX/PDF)	📋 Navbat
+Phase 3	Haftalar 13–18	Mobil ilova (React Native), Google Maps mileage, Haydovchi profili, Dokumentlar	🔭 Kelajak
+Phase 4	Haftalar 19–26	AI-powered load tavsiyalari, Multi-tenant SaaS, QuickBooks integratsiyasi	🚀 SaaS
+ 
+8. Xavfsizlik va Ishlash Talablari
+8.1 Xavfsizlik
+•	HTTPS majburiy — Let's Encrypt sertifikati
+•	Parollar: bcrypt (salt rounds: 12) bilan hash
+•	SQL Injection: Prisma ORM prepared statements orqali himoya
+•	XSS: sanitizatsiya va Content Security Policy (CSP) sarlavhasi
+•	CSRF: Double Submit Cookie pattern
+•	Audit log: barcha CRUD amallar bazaga yoziladi (kim, qachon, nima)
+•	Soft delete: ma'lumotlar haqiqatan o'chirilmaydi, deleted_at sana qo'yiladi
+•	Backup: kunlik avtomatik backup (7 kun saqlanadi)
+
+8.2 Ishlash (Performance)
+•	Sahifa yuklash vaqti: < 2 sekund (Google PageSpeed 90+)
+•	API javob vaqti: < 300ms (95-percentile)
+•	Yuklar jadvali: 10,000 qatorga qadar aribsiz ishlashi (virtual scroll)
+•	Database indekslash: driver_id, dispatcher_id, week_start, status maydonlari
+•	CDN: Statik fayllar uchun (Cloudflare yoki Vercel Edge)
+•	Query optimizatsiyasi: N+1 muammo oldini olish (Prisma include)
+ 
+9. Muvaffaqiyat Mezonlari (Acceptance Criteria)
+
+#	Mezon	Tekshirish usuli
+1	Foydalanuvchi tizimga kirishi va chiqishi mumkin (JWT)	Manuel test + Postman
+2	Admin barcha 4 rolni yarata oladi	UI orqali test
+3	Yuk qo'shilganda RPM avtomatik hisoblanadi	Matematik tekshiruv
+4	B-I Diff < 0 bo'lsa qizil rang va bildirishnoma chiqadi	Test yuki kiritish
+5	KPI Dashboard filtrlanganda ma'lumotlar o'zgaradi	Filtr test
+6	Dispetcher faqat o'z yuklarini ko'radi (boshqasini emas)	Rol tekshiruvi
+7	Accounting faqat moliya ustunlarini tahrirlaydi	Ruxsat tekshiruvi
+8	Haftalik ko'rinish Google Sheets ga o'xshash ishlaydi	Foydalanuvchi qabuli
+9	Excel (.xlsx) eksport to'g'ri ma'lumotlar bilan yuklanadi	Fayl tekshiruvi
+10	Mobil qurilmada (375px) jadval va forma to'g'ri ko'rinadi	DevTools + real qurilma
+11	Audit log har bir o'zgarishni saqlab qoladi	DB tekshiruvi
+12	Tizim 50 ta bir vaqtdagi foydalanuvchi bilan barqaror ishlaydi	Load testing (k6)
+ 
+10. Ilovalar va Glossariy
+10.1 Atamalar lug'ati
+Atama	Izoh
+O/O	Owner Operator — o'z trakiga ega mustaqil haydovchi
+C/D	Company Driver — kompaniyaning yollanma haydovchisi
+Load	Yuk — bitta transport topshirig'i
+Broker	Yuk topib beruvchi vositachi kompaniya
+RPM	Rate Per Mile — bir mil uchun to'lov miqdori ($)
+Gross	Yalpi daromad — xarajatlar chegirmagunga qadar
+Reimbursement	Qoplamalar: toll (yo'l to'lovi), lumper (yuklash/tushirish), layover (kutish), detention
+Invoice	Hisob-faktura — brokerga yuborilgan to'lov talabi
+B-I Diff	Broker Paid − Invoiced Amount — broker yetarli to'ladimi farqi
+I-R+R Diff	Invoiced − (Rate + Reimbursement) — invoys to'g'ri qilinganmi farqi
+KPI	Key Performance Indicator — asosiy ishlash ko'rsatkichi
+MVP	Minimum Viable Product — minimal ishlatiladigan mahsulot (1-bosqich)
+PU Date	Pick-Up Date — yuk olingan sana
+DEL Date	Delivery Date — yuk yetkazilgan sana
+JWT	JSON Web Token — xavfsiz kirish tokeni
+SaaS	Software as a Service — bulut asosidagi dastur xizmati
+
+🚛  LoadBoard Pro — Texnik Vazifa
+Hujjat tasdiqlanishi kerak: Admin → Texnik rahbar → Dasturchi jamoa
+Savollar yoki o'zgartirishlar bo'lsa — TZ yangilanadi va versiya ko'tariladi
+
