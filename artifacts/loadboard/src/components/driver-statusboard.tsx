@@ -158,6 +158,51 @@ export function DriverStatusboard({
     [qc, t],
   );
 
+  const createLoadForDriver = useCallback(
+    async (
+      driverId: string,
+      loadNumber: string,
+      sectionDispatcherId: string | null,
+    ) => {
+      try {
+        const dispatcherId =
+          editorRole === "dispatcher"
+            ? editorUserId
+            : sectionDispatcherId;
+        const res = await fetch("/api/loads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            loadNumber: `NEW-${crypto.randomUUID().slice(0, 8)}`,
+            driverId,
+            dispatcherId: dispatcherId ?? null,
+            weekStart,
+            puDate: weekStart,
+            delDate: weekStart,
+            originCity: "-",
+            originState: "-",
+            destCity: "-",
+            destState: "-",
+            mileage: 1,
+            rate: 1,
+            status: "Booked",
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error((err as { error?: string }).error ?? "create failed");
+        }
+        const created = (await res.json()) as { id: string };
+        return patchLoad(created.id, { loadNumber });
+      } catch {
+        toast.error(t("statusboard.loadSaveFailed"));
+        return false;
+      }
+    },
+    [editorRole, editorUserId, weekStart, patchLoad, t],
+  );
+
   const sections = useMemo(
     () =>
       filterStatusboardSections(
@@ -211,6 +256,10 @@ export function DriverStatusboard({
 
     const loadInputClass = cn(inputCls, "min-w-[72px]");
 
+    const blurOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter") e.currentTarget.blur();
+    };
+
     return (
       <tr
         key={d.id}
@@ -222,22 +271,86 @@ export function DriverStatusboard({
           rowSaving && "opacity-60",
         )}
       >
-        <td className={cn(cell, "tabular-nums whitespace-nowrap min-w-[88px]")}>
-          {d.truckNumber ?? t("common.emDash")}
+        <td className={cn(cell, "tabular-nums whitespace-nowrap min-w-[88px]")} onClick={(e) => e.stopPropagation()}>
+          {rowCanEdit ? (
+            <input
+              className={cn(inputCls, "min-w-[72px]")}
+              defaultValue={d.truckNumber ?? ""}
+              placeholder={t("common.emDash")}
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                if (v === (d.truckNumber ?? "")) return;
+                void patchDriver(d.id, { truckNumber: v || null });
+              }}
+              onKeyDown={blurOnEnter}
+            />
+          ) : (
+            d.truckNumber ?? t("common.emDash")
+          )}
         </td>
-        <td className={cn(cell, "font-semibold text-foreground min-w-[140px]")}>
-          {d.fullName}
+        <td className={cn(cell, "font-semibold text-foreground min-w-[140px]")} onClick={(e) => e.stopPropagation()}>
+          {rowCanEdit ? (
+            <input
+              className={cn(inputCls, "min-w-[120px] font-semibold")}
+              defaultValue={d.fullName}
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                if (!v || v === d.fullName) return;
+                void patchDriver(d.id, { fullName: v });
+              }}
+              onKeyDown={blurOnEnter}
+            />
+          ) : (
+            d.fullName
+          )}
         </td>
-        <td className={cn(cell, "tabular-nums whitespace-nowrap")}>{d.phone ?? t("common.emDash")}</td>
-        <td className={cell}>
-          <span
-            className={cn(
-              "inline-block rounded-md px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap",
-              DRIVER_TYPE_STYLES[d.driverType] ?? "bg-muted text-muted-foreground border border-border",
-            )}
-          >
-            {t(DRIVER_TYPE_KEYS[d.driverType] ?? d.driverType)}
-          </span>
+        <td className={cn(cell, "tabular-nums whitespace-nowrap")} onClick={(e) => e.stopPropagation()}>
+          {rowCanEdit ? (
+            <input
+              className={cn(inputCls, "min-w-[100px]")}
+              defaultValue={d.phone ?? ""}
+              placeholder={t("common.emDash")}
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                if (v === (d.phone ?? "")) return;
+                void patchDriver(d.id, { phone: v || null });
+              }}
+              onKeyDown={blurOnEnter}
+            />
+          ) : (
+            d.phone ?? t("common.emDash")
+          )}
+        </td>
+        <td className={cell} onClick={(e) => e.stopPropagation()}>
+          {rowCanEdit ? (
+            <select
+              className={cn(
+                "w-full min-w-[110px] text-[11px] font-semibold rounded-md border px-1.5 py-0.5 cursor-pointer bg-transparent",
+                DRIVER_TYPE_STYLES[d.driverType] ?? "bg-muted text-muted-foreground border-border",
+              )}
+              value={d.driverType}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (next === d.driverType) return;
+                void patchDriver(d.id, { driverType: next });
+              }}
+            >
+              {(["OO", "CD", "Lease"] as const).map((type) => (
+                <option key={type} value={type}>
+                  {t(DRIVER_TYPE_KEYS[type])}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span
+              className={cn(
+                "inline-block rounded-md px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap",
+                DRIVER_TYPE_STYLES[d.driverType] ?? "bg-muted text-muted-foreground border border-border",
+              )}
+            >
+              {t(DRIVER_TYPE_KEYS[d.driverType] ?? d.driverType)}
+            </span>
+          )}
         </td>
         <td className={cn(cell, "text-right tabular-nums font-medium")} onClick={(e) => e.stopPropagation()}>
           <input
@@ -287,28 +400,31 @@ export function DriverStatusboard({
           />
         </td>
         <td className={cn(cell, "font-bold whitespace-nowrap min-w-[72px]")} onClick={(e) => e.stopPropagation()}>
-          {load ? (
-            loadCanEdit ? (
-              <input
-                className={cn(loadInputClass, "font-bold")}
-                defaultValue={load.loadNumber ?? ""}
-                placeholder={t("common.emDash")}
-                onBlur={(e) => {
-                  const v = e.target.value.trim();
+          {rowCanEdit ? (
+            <input
+              className={cn(loadInputClass, "font-bold")}
+              defaultValue={load?.loadNumber ?? ""}
+              placeholder={t("common.emDash")}
+              disabled={!!load && !loadCanEdit}
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                if (load) {
+                  if (!loadCanEdit) return;
                   if (v === (load.loadNumber ?? "")) return;
                   if (!v) {
                     e.target.value = load.loadNumber ?? "";
                     return;
                   }
                   void patchLoad(load.id, { loadNumber: v });
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                }}
-              />
-            ) : (
-              load.loadNumber ?? t("common.emDash")
-            )
+                  return;
+                }
+                if (!v) return;
+                void createLoadForDriver(d.id, v, section.dispatcherId);
+              }}
+              onKeyDown={blurOnEnter}
+            />
+          ) : load ? (
+            load.loadNumber ?? t("common.emDash")
           ) : (
             t("common.emDash")
           )}

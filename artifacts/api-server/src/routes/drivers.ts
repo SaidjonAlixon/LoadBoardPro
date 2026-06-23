@@ -156,9 +156,13 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
   const boardFields = new Set([
     "boardStatus", "boardNote", "prebook", "odometer", "eta", "currentLocation",
   ]);
+  const profileFields = new Set([
+    "fullName", "driverType", "phone", "email", "truckNumber",
+  ]);
   const touchesBoard = Object.keys(updates).some((k) => boardFields.has(k));
+  const touchesProfile = Object.keys(updates).some((k) => profileFields.has(k));
 
-  if (req.userRole === "dispatcher" && touchesBoard && req.userId) {
+  if (req.userRole === "dispatcher" && req.userId && (touchesBoard || touchesProfile)) {
     const owns = await dispatcherOwnsDriver(req.userId, req.params.id);
     if (!owns) {
       res.status(403).json({ error: "You can only update your own drivers" });
