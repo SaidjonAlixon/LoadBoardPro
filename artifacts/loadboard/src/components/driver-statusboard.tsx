@@ -52,6 +52,8 @@ function resolveBoardLoad(
   return block.loads.find((l) => l.dispatcherId === sectionDispatcherId) ?? block.loads[0];
 }
 
+const COL_COUNT = 13;
+
 function cityState(city: string, state: string): string {
   if (!city || city === "-") return "";
   return state && state !== "-" ? `${city}, ${state}` : city;
