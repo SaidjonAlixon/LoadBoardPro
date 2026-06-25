@@ -1,7 +1,12 @@
 import type { Load, LoadUpdate } from "@workspace/api-client-react";
 
-/** Broker, reimbursement, and dispatch notes are optional for dispatchers. */
-export const DISPATCHER_OPTIONAL_LOAD_FIELDS = new Set(["brokerId", "reimbursement", "dispatchNotes"]);
+/** Broker, reimbursement, dispatch notes, and dispatcher are optional for dispatchers. */
+export const DISPATCHER_OPTIONAL_LOAD_FIELDS = new Set([
+  "brokerId",
+  "reimbursement",
+  "dispatchNotes",
+  "dispatcherId",
+]);
 
 export type DispatcherLoadFieldKey =
   | "loadNumber"
@@ -68,6 +73,27 @@ export function isDispatcherDraftLoad(load: Pick<Load, "loadNumber">): boolean {
   return isDraftLoadNumber(load.loadNumber);
 }
 
+/** Row still being filled in the spreadsheet — allow partial saves. */
+export function isLoadDraftInProgress(
+  load: Pick<
+    Load,
+    | "loadNumber"
+    | "puDate"
+    | "delDate"
+    | "originCity"
+    | "destCity"
+    | "mileage"
+    | "rate"
+  >,
+): boolean {
+  if (isDraftLoadNumber(load.loadNumber)) return true;
+  if (isPlaceholderCity(load.originCity) || isPlaceholderCity(load.destCity)) return true;
+  if (!load.mileage || Number(load.mileage) <= 0) return true;
+  if (load.rate === undefined || load.rate === null || Number(load.rate) <= 0) return true;
+  if (!load.puDate?.trim() || !load.delDate?.trim()) return true;
+  return false;
+}
+
 export function getActiveDraftLoadId(
   loads: Pick<
     Load,
@@ -117,15 +143,12 @@ export function getDispatcherLoadMissingFields(
   const missing: DispatcherLoadFieldKey[] = [];
 
   if (isDraftLoadNumber(load.loadNumber)) missing.push("loadNumber");
-  if (!load.puDate?.trim() || isDraftDateUnset(load, "puDate", touched)) missing.push("puDate");
-  if (!load.delDate?.trim() || isDraftDateUnset(load, "delDate", touched)) missing.push("delDate");
+  if (!load.puDate?.trim()) missing.push("puDate");
+  if (!load.delDate?.trim()) missing.push("delDate");
   if (isPlaceholderCity(load.originCity)) missing.push("originCity");
   if (isPlaceholderCity(load.destCity)) missing.push("destCity");
   if (!load.mileage || Number(load.mileage) <= 0) missing.push("mileage");
   if (load.rate === undefined || load.rate === null || Number(load.rate) <= 0) missing.push("rate");
-  if (options?.requireDispatcher && (!load.dispatcherId || isDraftDispatcherUnset(load, touched))) {
-    missing.push("dispatcherId");
-  }
   if (!load.status?.trim()) missing.push("status");
 
   return missing;
@@ -169,8 +192,9 @@ export function getDispatcherFieldValidation(
   touched?: Set<string>,
   options?: LoadValidationOptions,
 ): "valid" | "invalid" | "neutral" {
-  if (field === "broker" || field === "dispatchNotes" || field === "reimbursement") return "neutral";
-  if (field === "dispatcherId" && !options?.requireDispatcher) return "neutral";
+  if (field === "broker" || field === "dispatchNotes" || field === "reimbursement" || field === "dispatcherId") {
+    return "neutral";
+  }
 
   const key =
     field === "origin"
@@ -180,7 +204,7 @@ export function getDispatcherFieldValidation(
         : field;
 
   const missing = getDispatcherLoadMissingFields(load, touched, options);
-  return missing.includes(key as DispatcherLoadFieldKey) ? "invalid" : "valid";
+  return missing.includes(key as DispatcherLoadFieldKey) ? "invalid" : "neutral";
 }
 
 /** Tab order for required draft cells in the spreadsheet (optional fields omitted). */
@@ -192,7 +216,6 @@ export const DRAFT_SHEET_FIELD_ORDER: SheetValidationField[] = [
   "dest",
   "mileage",
   "rate",
-  "dispatcherId",
   "status",
 ];
 
@@ -308,10 +331,8 @@ export function validateDispatcherPatchValue(
       return null;
     }
     case "puDate":
-      if (isDraftDateUnset(merged, "puDate", touched)) return "puDate";
       return merged.puDate?.trim() ? null : "puDate";
     case "delDate":
-      if (isDraftDateUnset(merged, "delDate", touched)) return "delDate";
       return merged.delDate?.trim() ? null : "delDate";
     case "originCity":
     case "originState":
@@ -328,9 +349,7 @@ export function validateDispatcherPatchValue(
     case "status":
       return merged.status?.trim() ? null : "status";
     case "dispatcherId":
-      if (!options?.requireDispatcher) return null;
-      if (isDraftDispatcherUnset(merged, touched)) return "dispatcherId";
-      return merged.dispatcherId ? null : "dispatcherId";
+      return null;
     default:
       return null;
   }

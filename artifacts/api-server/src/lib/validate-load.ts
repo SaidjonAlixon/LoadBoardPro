@@ -34,7 +34,6 @@ export function validateDispatcherLoadInput(load: LoadInput): string[] {
   if (!load.mileage || Number(load.mileage) <= 0) errors.push("mileage");
   if (load.rate === undefined || load.rate === null || Number(load.rate) <= 0) errors.push("rate");
   if (!load.status?.trim()) errors.push("status");
-  if (!load.dispatcherId) errors.push("dispatcher");
 
   return errors;
 }
@@ -52,4 +51,14 @@ export function mergeLoadForValidation(
 
 export function isDraftLoadNumberValue(loadNumber?: string | null): boolean {
   return isDraftLoadNumber(loadNumber);
+}
+
+/** Spreadsheet row still being filled — allow partial PATCH without full validation. */
+export function isLoadDraftInProgress(load: LoadInput): boolean {
+  if (isDraftLoadNumber(load.loadNumber)) return true;
+  if (isPlaceholderCity(load.originCity) || isPlaceholderCity(load.destCity)) return true;
+  if (!load.mileage || Number(load.mileage) <= 0) return true;
+  if (load.rate === undefined || load.rate === null || Number(load.rate) <= 0) return true;
+  if (!load.puDate?.trim() || !load.delDate?.trim()) return true;
+  return false;
 }

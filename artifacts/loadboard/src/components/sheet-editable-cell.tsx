@@ -11,6 +11,9 @@ import { cn } from "@/lib/utils";
 const INPUT_CLS =
   "w-full h-full min-h-[22px] px-1 py-0 text-[11px] border-2 border-accent outline-none bg-sheet-cell text-sheet-cell-fg rounded-none";
 
+const SELECT_CLS =
+  "w-full h-full min-h-[26px] px-1 py-0.5 text-[11px] border border-sheet-border outline-none bg-sheet-cell text-sheet-cell-fg rounded-sm cursor-pointer font-semibold uppercase tracking-wide";
+
 const DATE_INPUT_CLS =
   "w-full h-full min-h-[24px] px-1.5 py-0 text-[11px] border border-[#0078d4] outline-none bg-white text-left text-neutral-900 rounded-none shadow-none";
 
@@ -195,25 +198,24 @@ export function SheetEditableCell({
     setEditing(false);
   };
 
+  /** Close the editor immediately; persist in the background (optimistic parent update). */
+  const fireSave = (next: string, advance = false) => {
+    setEditing(false);
+    setCalendarOpen(false);
+    if (advance) onEnterAdvance?.();
+    void onSave(next).catch(() => undefined);
+  };
+
   const commitDate = async (d: Date, advance = false) => {
     const iso = formatIsoDate(d);
     setDateText(isoToSheetDate(iso));
-    setCalendarOpen(false);
     if (iso === value.split("T")[0]) {
       setEditing(false);
+      setCalendarOpen(false);
       if (advance) onEnterAdvance?.();
       return;
     }
-    setSaving(true);
-    try {
-      await onSave(iso);
-      setEditing(false);
-      if (advance) onEnterAdvance?.();
-    } catch {
-      setEditing(true);
-    } finally {
-      setSaving(false);
-    }
+    fireSave(iso, advance);
   };
 
   const commitDateFromText = async (advance = false) => {
@@ -243,16 +245,7 @@ export function SheetEditableCell({
       if (advance && !(selectOptions && isUnsetSelect(draft))) onEnterAdvance?.();
       return;
     }
-    setSaving(true);
-    try {
-      await onSave(draft);
-      setEditing(false);
-      if (advance) onEnterAdvance?.();
-    } catch {
-      setEditing(true);
-    } finally {
-      setSaving(false);
-    }
+    fireSave(draft, advance);
   };
 
   const commitSelect = async (next: string) => {
@@ -262,16 +255,7 @@ export function SheetEditableCell({
       setEditing(false);
       return;
     }
-    setSaving(true);
-    try {
-      await onSave(next);
-      setEditing(false);
-      onEnterAdvance?.();
-    } catch {
-      setEditing(true);
-    } finally {
-      setSaving(false);
-    }
+    fireSave(next, true);
   };
 
   const copyText = normalizedValue === SELECT_UNSET ? "" : normalizedValue;
@@ -297,16 +281,7 @@ export function SheetEditableCell({
     }
 
     if (next === normalizedValue) return;
-    setSaving(true);
-    try {
-      await onSave(next);
-      setEditing(false);
-    } catch {
-      setDraft(next);
-      setEditing(true);
-    } finally {
-      setSaving(false);
-    }
+    fireSave(next, false);
   };
 
   const cutCellValue = async () => {
@@ -439,7 +414,7 @@ export function SheetEditableCell({
               onBlur={() => {
                 window.setTimeout(() => {
                   if (!calendarOpenRef.current) void commitDateFromText(false);
-                }, 120);
+                }, 0);
               }}
               onKeyDown={(e) => {
                 if (isClipboardMod(e)) {
@@ -549,7 +524,7 @@ export function SheetEditableCell({
                 ? (e) => handleNumericPaste(e, integerOnly, setDraft)
                 : undefined
             }
-            onBlur={() => window.setTimeout(() => void commit(false), 0)}
+            onBlur={() => void commit(false)}
             onKeyDown={handleKeyDown}
           />
         )}
@@ -610,4 +585,84 @@ export function isoToSheetDate(iso: string): string {
   const dd = String(d.getDate()).padStart(2, "0");
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   return `${dd}.${mm}.${d.getFullYear()}`;
+}
+
+interface SheetDispatcherCellProps {
+  editable: boolean;
+  value: string | null | undefined;
+  defaultValue?: string | null;
+  label: string;
+  placeholder: string;
+  options: { value: string; label: string }[];
+  className?: string;
+  validationState?: "valid" | "invalid" | "neutral";
+  onSave: (dispatcherId: string) => Promise<void>;
+}
+
+/** Always-visible dispatcher dropdown — no click-to-edit step. */
+export function SheetDispatcherCell({
+  editable,
+  value,
+  defaultValue = null,
+  label,
+  placeholder,
+  options,
+  className = "",
+  validationState = "neutral",
+  onSave,
+}: SheetDispatcherCellProps) {
+  const [saving, setSaving] = useState(false);
+  const autoAssigned = useRef(false);
+  const effectiveValue = value || defaultValue || "";
+
+  useEffect(() => {
+    if (autoAssigned.current || !editable || !defaultValue || value) return;
+    autoAssigned.current = true;
+    setSaving(true);
+    void onSave(defaultValue).finally(() => setSaving(false));
+  }, [editable, defaultValue, value, onSave]);
+
+  const validationCls =
+    validationState === "invalid"
+      ? "bg-red-100 ring-1 ring-inset ring-red-500 dark:bg-red-950/40 dark:ring-red-500"
+      : "";
+
+  const baseCls = `px-1.5 py-0.5 border-r border-b border-sheet-border text-[11px] bg-sheet-cell text-sheet-cell-fg align-middle text-center ${SHEET_CELL_CLIP} ${className}`;
+
+  const optionLabel =
+    options.find((o) => o.value === effectiveValue)?.label ?? label;
+
+  if (!editable || options.length === 0) {
+    return (
+      <td className={`${baseCls} font-semibold uppercase tracking-wide ${validationCls}`} title={optionLabel}>
+        <SheetCellText>{optionLabel || "—"}</SheetCellText>
+      </td>
+    );
+  }
+
+  return (
+    <td className={`${baseCls} px-0 py-0 ${validationCls} ${saving ? "opacity-60" : ""}`}>
+      <select
+        className={`${SELECT_CLS} ${!effectiveValue ? "text-muted-foreground italic normal-case tracking-normal font-medium" : ""}`}
+        value={effectiveValue}
+        disabled={saving}
+        title={effectiveValue ? optionLabel : placeholder}
+        onChange={(e) => {
+          const next = e.target.value;
+          if (!next || next === effectiveValue) return;
+          setSaving(true);
+          void onSave(next)
+            .catch(() => undefined)
+            .finally(() => setSaving(false));
+        }}
+      >
+        <option value="">{placeholder}</option>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </td>
+  );
 }

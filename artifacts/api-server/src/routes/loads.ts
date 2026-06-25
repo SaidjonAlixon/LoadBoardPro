@@ -10,6 +10,7 @@ import {
   validateDispatcherLoadInput,
   validateAdminLoadInput,
   mergeLoadForValidation,
+  isLoadDraftInProgress,
 } from "../lib/validate-load";
 import { denyIfDispatcherLockedWeek } from "../lib/week-lock-access";
 
@@ -109,13 +110,29 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
   if (brokerId) conditions.push(eq(loadsTable.brokerId, brokerId));
   applyWeekPeriodFilters(conditions, { dateFrom, dateTo, weekStart, weekStarts });
   if (search) {
-    conditions.push(
-      or(
-        ilike(loadsTable.loadNumber, `%${search}%`),
-        ilike(loadsTable.originCity, `%${search}%`),
-        ilike(loadsTable.destCity, `%${search}%`),
-      )!
-    );
+    const pattern = `%${search}%`;
+    const matchingDrivers = await db
+      .select({ id: driversTable.id })
+      .from(driversTable)
+      .where(
+        or(
+          ilike(driversTable.fullName, pattern),
+          ilike(driversTable.truckNumber, pattern),
+          ilike(driversTable.phone, pattern),
+        )!,
+      );
+    const matchingDriverIds = matchingDrivers.map((d) => d.id);
+
+    const searchConditions = [
+      ilike(loadsTable.loadNumber, pattern),
+      ilike(loadsTable.originCity, pattern),
+      ilike(loadsTable.destCity, pattern),
+    ];
+    if (matchingDriverIds.length > 0) {
+      searchConditions.push(inArray(loadsTable.driverId, matchingDriverIds));
+    }
+
+    conditions.push(or(...searchConditions)!);
   }
 
   const pageNum = parseInt(page);
@@ -181,11 +198,15 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
     return;
   }
 
+  const resolvedDispatcherId =
+    dispatcherId
+    ?? (req.userRole === "dispatcher" ? req.userId : null);
+
   const isDispatcherRole = req.userRole === "dispatcher" || req.userRole === "admin";
   if (isDispatcherRole && !isDraftLoadNumberValue(loadNumber)) {
     const payload = {
       loadNumber,
-      dispatcherId,
+      dispatcherId: resolvedDispatcherId,
       puDate,
       delDate,
       originCity,
@@ -211,7 +232,7 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
     id: crypto.randomUUID(),
     loadNumber,
     driverId: driverId ?? null,
-    dispatcherId: dispatcherId ?? null,
+    dispatcherId: resolvedDispatcherId,
     brokerId: brokerId ?? null,
     puDate,
     delDate,
@@ -512,11 +533,20 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
   }
 
   if (isDispatcher || isAdmin) {
+    if (req.userRole === "dispatcher" && !load.dispatcherId && !("dispatcherId" in updates)) {
+      updates.dispatcherId = req.userId;
+    }
+
     const mergedForValidation = mergeLoadForValidation(load, updates);
-    const finalLoadNumber = String(mergedForValidation.loadNumber ?? "");
-    if (!isDraftLoadNumberValue(finalLoadNumber) && !mergedForValidation.dispatcherId) {
-      res.status(400).json({ error: "Dispatcher is required" });
-      return;
+    if (!isLoadDraftInProgress(mergedForValidation)) {
+      const errors =
+        req.userRole === "admin"
+          ? validateAdminLoadInput(mergedForValidation)
+          : validateDispatcherLoadInput(mergedForValidation);
+      if (errors.length > 0) {
+        res.status(400).json({ error: `Required fields: ${errors.join(", ")}` });
+        return;
+      }
     }
   }
 

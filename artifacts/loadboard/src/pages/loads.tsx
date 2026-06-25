@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useListLoads, useListDrivers, useListBrokers, useGetMe, type User } from "@workspace/api-client-react";
 import { resolveBrokerIdByName } from "@/lib/resolve-broker";
 import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
@@ -40,6 +40,7 @@ import {
 import { LoadsSpreadsheet } from "@/components/loads-spreadsheet";
 import type { BoardWeek } from "@/components/loads-week-toolbar";
 import { fetchAllFilteredLoads } from "@/lib/export-dashboard-excel";
+import { filterLoadsBySearch } from "@/lib/filter-loads-search";
 import { exportLoadsBoardExcel, getLoadsBoardExportLabels } from "@/lib/export-loads-excel";
 
 const BOARD_WEEK_KEY = "lb_board_week";
@@ -336,12 +337,6 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
     if (missing.length > 0) {
       const labels = missing.map((k) => t(DISPATCHER_REQUIRED_FIELD_LABEL_KEYS[k]));
       toast.error(t("loads.validation.completeRequired", { fields: labels.join(", ") }));
-      return;
-    }
-    if (isAdmin && !form.dispatcherId) {
-      toast.error(
-        t("loads.validation.fieldRequired", { field: t("loads.dispatcher") }),
-      );
       return;
     }
     mutation.mutate(form);
@@ -963,13 +958,16 @@ export default function LoadsList() {
     setExporting(true);
     try {
       const params = {
-        search: search || undefined,
         status: (filters.status as any) || undefined,
         driverId: filters.driverId || undefined,
         dispatcherId: canFilterDispatchers ? filters.dispatcherId || undefined : undefined,
         weekStart,
       };
-      const exportLoads = await fetchAllFilteredLoads(params);
+      const exportLoads = filterLoadsBySearch(
+        await fetchAllFilteredLoads(params),
+        search,
+        driversData ?? [],
+      );
       const labels = getLoadsBoardExportLabels(t);
       const statusValue = filters.status
         ? translateLoadStatus(t, filters.status)
@@ -1016,7 +1014,6 @@ export default function LoadsList() {
   ]);
 
   const { data: loadsData, isLoading } = useListLoads({
-    search: search || undefined,
     status: (filters.status as any) || undefined,
     driverId: filters.driverId || undefined,
     dispatcherId: canFilterDispatchers ? filters.dispatcherId || undefined : undefined,
@@ -1024,13 +1021,19 @@ export default function LoadsList() {
     limit: 500,
   });
 
+  const displayedLoads = useMemo(
+    () => filterLoadsBySearch(loadsData?.data ?? [], search, driversData ?? []),
+    [loadsData?.data, search, driversData],
+  );
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <div className="flex-1 flex flex-col overflow-hidden border border-border bg-card min-h-0 w-full">
         <div className="flex-1 min-h-0 overflow-hidden">
           <LoadsSpreadsheet
-            loads={loadsData?.data ?? []}
+            loads={displayedLoads}
             isLoading={isLoading}
+            searchQuery={search}
             userRole={userRole}
             currentUserId={me?.id}
             brokers={brokersData ?? []}
