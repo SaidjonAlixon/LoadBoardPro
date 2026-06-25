@@ -48,6 +48,7 @@ import { getSheetStatusClass } from "@/lib/load-status-styles";
 import {
   SheetEditableCell,
   SheetCellText,
+  SheetCopyableCell,
   SHEET_CELL_CLIP,
   isoToSheetDate,
   parseCityState,
@@ -393,17 +394,22 @@ function ReadOnlyMoneyCell({
 }) {
   const { t } = useI18n();
   if (value === null || value === undefined) {
-    return <td className={`${READONLY_CELL} ${className}`}>{t("common.emDash")}</td>;
+    return (
+      <SheetCopyableCell value="" className={`${READONLY_CELL} ${className}`}>
+        {t("common.emDash")}
+      </SheetCopyableCell>
+    );
   }
   const neg = highlightNegative && value < 0;
   const text = formatCurrency(value);
   return (
-    <td
+    <SheetCopyableCell
+      value={text}
       className={`${READONLY_CELL} font-medium ${neg ? "bg-red-200 text-red-900" : ""} ${className}`}
       title={text}
     >
       <SheetCellText>{text}</SheetCellText>
-    </td>
+    </SheetCopyableCell>
   );
 }
 
@@ -1425,7 +1431,11 @@ export function LoadsSpreadsheet({
           <ReadOnlyMoneyCell value={load.invoicedAmount} formatCurrency={formatCurrency} />
         )}
         {showAccountingFinancialStyle ? (
-          <td className={`${READONLY_CELL} accounting-money-cell`} title={irDiff != null ? formatCurrency(irDiff) : undefined}>
+          <SheetCopyableCell
+            value={irDiff !== null ? `${irDiff >= 0 ? "+" : ""}${formatCurrency(irDiff)}` : ""}
+            className={`${READONLY_CELL} accounting-money-cell`}
+            title={irDiff != null ? formatCurrency(irDiff) : undefined}
+          >
             {irDiff !== null ? (
               <span
                 className={`inline-flex items-center gap-0.5 font-medium tabular-nums ${
@@ -1440,7 +1450,7 @@ export function LoadsSpreadsheet({
             ) : (
               t("common.emDash")
             )}
-          </td>
+          </SheetCopyableCell>
         ) : (
           <ReadOnlyMoneyCell
             value={load.irDiff}
@@ -1495,7 +1505,10 @@ export function LoadsSpreadsheet({
           <ReadOnlyMoneyCell value={load.brokerPaid} formatCurrency={formatCurrency} />
         )}
         {showAccountingFinancialStyle ? (
-          <td className={`${READONLY_CELL} accounting-money-cell border-r-0`}>
+          <SheetCopyableCell
+            value={biDiff !== null ? `${biDiff >= 0 ? "+" : ""}${formatCurrency(biDiff)}` : ""}
+            className={`${READONLY_CELL} accounting-money-cell border-r-0`}
+          >
             {biDiff !== null ? (
               <span
                 className={`inline-flex items-center gap-0.5 font-medium tabular-nums ${
@@ -1511,7 +1524,7 @@ export function LoadsSpreadsheet({
             ) : (
               t("common.emDash")
             )}
-          </td>
+          </SheetCopyableCell>
         ) : (
           <ReadOnlyMoneyCell
             value={load.biDiff}
@@ -2217,7 +2230,12 @@ export function LoadsSpreadsheet({
                           await patchLoad(load.id, { mileage });
                         }}
                       />
-                      <td
+                      <SheetCopyableCell
+                        value={
+                          load.rpm != null && load.rpm > 0
+                            ? formatCurrency(load.rpm)
+                            : ""
+                        }
                         className={readonlyCls}
                         title={
                           load.rpm != null && load.rpm > 0
@@ -2230,7 +2248,7 @@ export function LoadsSpreadsheet({
                             ? formatCurrency(load.rpm)
                             : t("common.emDash")}
                         </SheetCellText>
-                      </td>
+                      </SheetCopyableCell>
                       <SheetEditableCell
                         editable={canEditField(userRole, "rate", load, activeDraftLoadId, currentUserId, weekEditable)}
                         value={isNewLoad(load) && load.rate === 0 ? "" : String(load.rate ?? 0)}

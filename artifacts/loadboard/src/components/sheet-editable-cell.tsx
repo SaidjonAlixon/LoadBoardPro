@@ -25,6 +25,43 @@ export function SheetCellText({ children }: { children: ReactNode }) {
   );
 }
 
+function isClipboardMod(e: React.KeyboardEvent): boolean {
+  return e.ctrlKey || e.metaKey;
+}
+
+/** First cell when pasting from Excel (tab/newline separated). */
+function firstClipboardCell(text: string): string {
+  return text.replace(/\r\n/g, "\n").split("\t")[0]?.split("\n")[0]?.trim() ?? "";
+}
+
+export function SheetCopyableCell({
+  value,
+  className = "",
+  title,
+  children,
+}: {
+  value: string;
+  className?: string;
+  title?: string;
+  children: ReactNode;
+}) {
+  return (
+    <td
+      tabIndex={0}
+      className={className}
+      title={title}
+      onKeyDown={(e) => {
+        if (isClipboardMod(e) && e.key.toLowerCase() === "c") {
+          e.preventDefault();
+          void navigator.clipboard.writeText(value);
+        }
+      }}
+    >
+      {children}
+    </td>
+  );
+}
+
 interface SheetEditableCellProps {
   editable: boolean;
   value: string;
@@ -237,10 +274,94 @@ export function SheetEditableCell({
     }
   };
 
+  const copyText = normalizedValue === SELECT_UNSET ? "" : normalizedValue;
+
+  const pasteClipboardValue = async (raw: string) => {
+    let next = firstClipboardCell(raw);
+    if (!next) return;
+
+    if (inputType === "number") {
+      next = sanitizeNumericInput(next, integerOnly);
+      if (!next) return;
+    } else if (inputType === "date") {
+      next = sheetDateToIso(next);
+    } else if (selectOptions) {
+      const match = selectOptions.find(
+        (o) =>
+          o.value === next
+          || o.label.toLowerCase() === next.toLowerCase(),
+      );
+      if (!match || isUnsetSelect(match.value)) return;
+      await commitSelect(match.value);
+      return;
+    }
+
+    if (next === normalizedValue) return;
+    setSaving(true);
+    try {
+      await onSave(next);
+      setEditing(false);
+    } catch {
+      setDraft(next);
+      setEditing(true);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cutCellValue = async () => {
+    if (selectOptions) return;
+    try {
+      await navigator.clipboard.writeText(copyText);
+    } catch {
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave("");
+      setEditing(false);
+    } catch {
+      /* validation may reject empty */
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleInputClipboard = (e: React.KeyboardEvent) => {
+    if (!isClipboardMod(e)) return false;
+    const key = e.key.toLowerCase();
+    const input = inputRef.current;
+    if (!(input instanceof HTMLInputElement)) return false;
+
+    const hasSelection = input.selectionStart !== input.selectionEnd;
+    if (key === "c" && !hasSelection) {
+      e.preventDefault();
+      void navigator.clipboard.writeText(draft);
+      return true;
+    }
+    if (key === "x" && !hasSelection) {
+      e.preventDefault();
+      void navigator.clipboard.writeText(draft);
+      setDraft("");
+      return true;
+    }
+    return false;
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (handleInputClipboard(e)) return;
     if (inputType === "number") {
       blockInvalidNumericKey(e, integerOnly);
       if (e.defaultPrevented) return;
+    }
+    if (isClipboardMod(e)) {
+      const key = e.key.toLowerCase();
+      if (key === "v") {
+        e.preventDefault();
+        void navigator.clipboard.readText().then(pasteClipboardValue).catch(() => undefined);
+        return;
+      }
+      if (key === "c" || key === "x") return;
     }
     if (e.key === "Enter") {
       e.preventDefault();
@@ -248,6 +369,40 @@ export function SheetEditableCell({
     } else if (e.key === "Escape") {
       e.preventDefault();
       cancel();
+    }
+  };
+
+  const handleSelectKeyDown = (e: React.KeyboardEvent) => {
+    if (isClipboardMod(e)) {
+      const key = e.key.toLowerCase();
+      if (key === "c") {
+        e.preventDefault();
+        const opt = selectOptions?.find((o) => o.value === draft);
+        void navigator.clipboard.writeText(opt?.label ?? copyText);
+        return;
+      }
+      if (key === "v") {
+        e.preventDefault();
+        void navigator.clipboard.readText().then(pasteClipboardValue).catch(() => undefined);
+        return;
+      }
+      return;
+    }
+    handleKeyDown(e);
+  };
+
+  const handleDisplayKeyDown = (e: React.KeyboardEvent) => {
+    if (!isClipboardMod(e)) return;
+    const key = e.key.toLowerCase();
+    if (key === "c") {
+      e.preventDefault();
+      void navigator.clipboard.writeText(copyText);
+    } else if (key === "v" && editable) {
+      e.preventDefault();
+      void navigator.clipboard.readText().then(pasteClipboardValue).catch(() => undefined);
+    } else if (key === "x" && editable) {
+      e.preventDefault();
+      void cutCellValue();
     }
   };
 
@@ -287,6 +442,24 @@ export function SheetEditableCell({
                 }, 120);
               }}
               onKeyDown={(e) => {
+                if (isClipboardMod(e)) {
+                  const key = e.key.toLowerCase();
+                  if (key === "c") {
+                    e.preventDefault();
+                    void navigator.clipboard.writeText(dateText || copyText);
+                    return;
+                  }
+                  if (key === "v") {
+                    e.preventDefault();
+                    void navigator.clipboard.readText().then(pasteClipboardValue).catch(() => undefined);
+                    return;
+                  }
+                  if (key === "x") {
+                    e.preventDefault();
+                    void cutCellValue();
+                    return;
+                  }
+                }
                 if (e.key === "Enter") {
                   e.preventDefault();
                   void commitDateFromText(true);
@@ -338,7 +511,7 @@ export function SheetEditableCell({
             onBlur={() => {
               if (selectRequired && isUnsetSelect(draft)) cancel();
             }}
-            onKeyDown={handleKeyDown}
+            onKeyDown={handleSelectKeyDown}
             autoFocus
           >
             {(renderedSelectOptions ?? []).map((o) => (
@@ -386,13 +559,12 @@ export function SheetEditableCell({
 
   return (
     <td
+      tabIndex={editable || copyText ? 0 : -1}
       className={`px-1.5 py-0.5 border-r border-b border-sheet-border text-[11px] bg-sheet-cell text-sheet-cell-fg align-middle ${SHEET_CELL_CLIP} ${alignCls} ${
         editable ? "cursor-cell hover:bg-sheet-edit" : ""
       } ${saving ? "opacity-60" : ""} ${validationCls} ${className}`}
-      onMouseDown={(e) => {
-        if (editable && !saving) e.preventDefault();
-      }}
       onClick={startEdit}
+      onKeyDown={handleDisplayKeyDown}
       title={hoverTitle}
     >
       <SheetCellText>{display ?? (value || datePlaceholder)}</SheetCellText>
