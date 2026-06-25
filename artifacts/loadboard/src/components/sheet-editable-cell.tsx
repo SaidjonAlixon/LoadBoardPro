@@ -611,15 +611,13 @@ export function SheetDispatcherCell({
   validationState = "neutral",
   onSave,
 }: SheetDispatcherCellProps) {
-  const [saving, setSaving] = useState(false);
   const autoAssigned = useRef(false);
   const effectiveValue = value || defaultValue || "";
 
   useEffect(() => {
     if (autoAssigned.current || !editable || !defaultValue || value) return;
     autoAssigned.current = true;
-    setSaving(true);
-    void onSave(defaultValue).finally(() => setSaving(false));
+    void onSave(defaultValue).catch(() => undefined);
   }, [editable, defaultValue, value, onSave]);
 
   const validationCls =
@@ -641,19 +639,15 @@ export function SheetDispatcherCell({
   }
 
   return (
-    <td className={`${baseCls} px-0 py-0 ${validationCls} ${saving ? "opacity-60" : ""}`}>
+    <td className={`${baseCls} px-0 py-0 ${validationCls}`}>
       <select
         className={`${SELECT_CLS} ${!effectiveValue ? "text-muted-foreground italic normal-case tracking-normal font-medium" : ""}`}
         value={effectiveValue}
-        disabled={saving}
         title={effectiveValue ? optionLabel : placeholder}
         onChange={(e) => {
           const next = e.target.value;
           if (!next || next === effectiveValue) return;
-          setSaving(true);
-          void onSave(next)
-            .catch(() => undefined)
-            .finally(() => setSaving(false));
+          void onSave(next).catch(() => undefined);
         }}
       >
         <option value="">{placeholder}</option>

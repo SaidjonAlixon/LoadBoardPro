@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, startTransition, type ReactNode } from "react";
 import type { Broker, Driver, Load, LoadStatus, LoadUpdate, User } from "@workspace/api-client-react";
 import { useCreateLoad, useDeleteLoad, useGetKpi, updateLoad } from "@workspace/api-client-react";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
@@ -790,7 +790,10 @@ export function LoadsSpreadsheet({
   const [focusCell, setFocusCell] = useState<{ loadId: string; field: string } | null>(null);
   const [creatingRow, setCreatingRow] = useState(false);
   const creatingRowRef = useRef(false);
-  const pendingPatchesRef = useRef(new Map<string, LoadUpdate[]>());
+  const pendingCreatePatchesRef = useRef(new Map<string, LoadUpdate[]>());
+  const pendingApiPatchesRef = useRef(new Map<string, LoadUpdate>());
+  const patchFlushTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const patchInflightRef = useRef(new Map<string, Promise<void>>());
   const focusCellRef = useRef(focusCell);
   focusCellRef.current = focusCell;
   const addRowBlocked = !!activeDraftLoadId || creatingRow;
@@ -1026,7 +1029,6 @@ export function LoadsSpreadsheet({
     else setShowFinancial((v) => !v);
   }, [canToggleRouteDetails]);
 
-  const saveChains = useRef(new Map<string, Promise<void>>());
   const invalidateTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const draftTouchedRef = useRef(draftTouchedFields);
   draftTouchedRef.current = draftTouchedFields;
@@ -1060,8 +1062,72 @@ export function LoadsSpreadsheet({
   useEffect(
     () => () => {
       clearTimeout(invalidateTimer.current);
+      for (const timer of patchFlushTimersRef.current.values()) {
+        clearTimeout(timer);
+      }
+      patchFlushTimersRef.current.clear();
     },
     [],
+  );
+
+  const flushLoadPatch = useCallback(
+    async (id: string) => {
+      const timer = patchFlushTimersRef.current.get(id);
+      if (timer) {
+        clearTimeout(timer);
+        patchFlushTimersRef.current.delete(id);
+      }
+
+      const prev = patchInflightRef.current.get(id) ?? Promise.resolve();
+      const task = prev.then(async () => {
+        while (true) {
+          const batch = pendingApiPatchesRef.current.get(id);
+          if (!batch || Object.keys(batch).length === 0) return;
+          pendingApiPatchesRef.current.delete(id);
+
+          const load = findLoadInCache(id);
+          const draftInProgress = load ? isLoadDraftInProgress({ ...load, ...batch }) : false;
+
+          try {
+            const updated = await updateLoad(id, batch);
+            patchLoadInCache(qc, id, updated, dispatchers);
+            scheduleKpiRefresh();
+          } catch (err) {
+            void qc.invalidateQueries({ queryKey: ["/api/loads"] });
+            const apiMsg = readPatchError(err);
+            if (draftInProgress && apiMsg && /dispatcher/i.test(apiMsg)) {
+              return;
+            }
+            toast.error(apiMsg || t("loads.sheet.saveFailed"));
+            return;
+          }
+
+          if (!pendingApiPatchesRef.current.has(id)) break;
+        }
+      });
+
+      patchInflightRef.current.set(id, task);
+      await task;
+      if (patchInflightRef.current.get(id) === task) {
+        patchInflightRef.current.delete(id);
+      }
+    },
+    [findLoadInCache, qc, dispatchers, scheduleKpiRefresh, t],
+  );
+
+  const scheduleApiPatchFlush = useCallback(
+    (id: string, delayMs: number) => {
+      const existing = patchFlushTimersRef.current.get(id);
+      if (existing) clearTimeout(existing);
+      patchFlushTimersRef.current.set(
+        id,
+        setTimeout(() => {
+          patchFlushTimersRef.current.delete(id);
+          void flushLoadPatch(id);
+        }, delayMs),
+      );
+    },
+    [flushLoadPatch],
   );
 
   const createMutation = useCreateLoad({
@@ -1115,41 +1181,23 @@ export function LoadsSpreadsheet({
       if (field) {
         const nextTouched = markDraftFieldTouched(draftTouchedRef.current, id, field);
         draftTouchedRef.current = nextTouched;
-        setDraftTouchedFields(nextTouched);
+        startTransition(() => setDraftTouchedFields(nextTouched));
       }
 
       if (isPendingLoadId(id)) {
-        const queued = pendingPatchesRef.current.get(id) ?? [];
-        pendingPatchesRef.current.set(id, [...queued, patchData]);
+        const queued = pendingCreatePatchesRef.current.get(id) ?? [];
+        pendingCreatePatchesRef.current.set(id, [...queued, patchData]);
         return;
       }
 
-      const prev = saveChains.current.get(id) ?? Promise.resolve();
-      const next = prev
-        .then(() => updateLoad(id, patchData))
-        .then((updated) => {
-          patchLoadInCache(qc, id, updated, dispatchers);
-          scheduleKpiRefresh();
-        })
-        .catch((err) => {
-          void qc.invalidateQueries({ queryKey: ["/api/loads"] });
-          const apiMsg = readPatchError(err);
-          if (
-            draftInProgress
-            && apiMsg
-            && /dispatcher/i.test(apiMsg)
-          ) {
-            return;
-          }
-          toast.error(apiMsg || t("loads.sheet.saveFailed"));
-        });
-
-      saveChains.current.set(id, next);
+      const batched = { ...(pendingApiPatchesRef.current.get(id) ?? {}), ...patchData };
+      pendingApiPatchesRef.current.set(id, batched);
+      scheduleApiPatchFlush(id, draftInProgress ? 280 : 40);
     },
     [
       findLoadInCache,
       applyOptimisticLoadPatch,
-      scheduleKpiRefresh,
+      scheduleApiPatchFlush,
       qc,
       dispatchers,
       t,
@@ -1258,34 +1306,54 @@ export function LoadsSpreadsheet({
       void (async () => {
         try {
           const created = await createMutation.mutateAsync({ data: createData });
-          const queued = pendingPatchesRef.current.get(tempId) ?? [];
-          pendingPatchesRef.current.delete(tempId);
+          const queued = pendingCreatePatchesRef.current.get(tempId) ?? [];
+          pendingCreatePatchesRef.current.delete(tempId);
+          const mergedPatch = queued.reduce<LoadUpdate>((acc, p) => ({ ...acc, ...p }), {});
 
-          let finalLoad = created;
-          if (queued.length) {
-            const mergedPatch = queued.reduce<LoadUpdate>((acc, p) => ({ ...acc, ...p }), {});
-            finalLoad = await updateLoad(created.id, mergedPatch);
-          }
-
-          replaceLoadInCache(qc, tempId, finalLoad, dispatchers);
+          const optimisticFinal: Load = recomputeLoadDerivedFields({
+            ...created,
+            ...mergedPatch,
+          });
+          replaceLoadInCache(qc, tempId, optimisticFinal, dispatchers);
 
           const focused = focusCellRef.current;
           if (focused?.loadId === tempId) {
-            setFocusCell({ loadId: finalLoad.id, field: focused.field });
+            setFocusCell({ loadId: created.id, field: focused.field });
           }
 
           const touched = draftTouchedRef.current.get(tempId);
           if (touched?.size) {
             const nextTouched = new Map(draftTouchedRef.current);
             nextTouched.delete(tempId);
-            nextTouched.set(finalLoad.id, touched);
+            nextTouched.set(created.id, touched);
             draftTouchedRef.current = nextTouched;
-            setDraftTouchedFields(nextTouched);
+            startTransition(() => setDraftTouchedFields(nextTouched));
           }
 
-          scheduleKpiRefresh();
+          const apiPending = pendingApiPatchesRef.current.get(tempId);
+          if (apiPending) {
+            pendingApiPatchesRef.current.delete(tempId);
+            pendingApiPatchesRef.current.set(created.id, {
+              ...(pendingApiPatchesRef.current.get(created.id) ?? {}),
+              ...apiPending,
+            });
+          }
+
+          if (Object.keys(mergedPatch).length > 0) {
+            pendingApiPatchesRef.current.set(created.id, {
+              ...(pendingApiPatchesRef.current.get(created.id) ?? {}),
+              ...mergedPatch,
+            });
+          }
+
+          if (pendingApiPatchesRef.current.has(created.id)) {
+            scheduleApiPatchFlush(created.id, 0);
+          } else {
+            scheduleKpiRefresh();
+          }
         } catch {
-          pendingPatchesRef.current.delete(tempId);
+          pendingCreatePatchesRef.current.delete(tempId);
+          pendingApiPatchesRef.current.delete(tempId);
           removeLoadFromCache(qc, tempId);
           const focused = focusCellRef.current;
           if (focused?.loadId === tempId) setFocusCell(null);
@@ -1304,6 +1372,7 @@ export function LoadsSpreadsheet({
       drivers,
       dispatchers,
       qc,
+      scheduleApiPatchFlush,
       scheduleKpiRefresh,
     ],
   );
