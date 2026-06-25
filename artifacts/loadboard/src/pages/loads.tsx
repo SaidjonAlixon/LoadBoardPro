@@ -1047,45 +1047,43 @@ export default function LoadsList() {
             dispatchers={dispatchers ?? []}
             toolbarLeading={
               <>
-                <div className="relative w-40 shrink-0 sm:w-44">
-                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+                <div className="relative w-52 shrink-0 sm:w-60">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                   <Input
                     placeholder={t("loads.search")}
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    className="h-7 pl-7 pr-2 text-xs bg-card border-border shadow-sm focus:border-primary"
+                    className="sheet-toolbar-search h-8 pl-8 pr-2 text-sm focus:border-primary"
                     data-testid="input-search-loads"
                   />
                 </div>
                 <Button
                   variant="outline"
                   size="sm"
-                  className={`h-7 shrink-0 border-border px-2 shadow-sm gap-1 ${
-                    activeFilters > 0
-                      ? "border-primary text-foreground bg-primary/10"
-                      : "text-muted-foreground"
+                  className={`sheet-toolbar-btn sheet-toolbar-btn--filter ${
+                    activeFilters > 0 ? "sheet-toolbar-btn--active" : ""
                   }`}
                   onClick={() => setFilterOpen((v) => !v)}
                   data-testid="button-filter-loads"
                   title={t("common.filters")}
                 >
-                  <Filter className="h-3 w-3" />
-                  <span className="hidden sm:inline text-[11px]">{t("common.filters")}</span>
+                  <Filter className="h-3.5 w-3.5" />
+                  <span className="text-xs">{t("common.filters")}</span>
                   {activeFilters > 0 && (
-                    <span className="bg-primary text-white text-[9px] rounded-full min-w-3.5 h-3.5 px-0.5 flex items-center justify-center font-bold">
+                    <span className="bg-primary text-white text-[10px] rounded-full min-w-4 h-4 px-1 flex items-center justify-center font-bold">
                       {activeFilters}
                     </span>
                   )}
                 </Button>
                 <Button
                   size="sm"
-                  className="btn-export-excel no-default-hover-elevate h-7 shrink-0 gap-1 px-2"
+                  className="btn-export-excel no-default-hover-elevate h-8 shrink-0 gap-1.5 px-3"
                   onClick={() => void handleExportExcel()}
                   disabled={exporting}
                   title={exporting ? t("loads.exporting") : t("loads.exportExcel")}
                 >
-                  <Download className="h-3 w-3" />
-                  <span className="hidden md:inline text-[11px]">
+                  <Download className="h-3.5 w-3.5" />
+                  <span className="text-xs">
                     {exporting ? t("loads.exporting") : t("loads.exportExcel")}
                   </span>
                 </Button>

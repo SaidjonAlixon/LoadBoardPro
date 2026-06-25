@@ -129,12 +129,12 @@ export function WeekLockControls({
 
   return (
     <>
-      <div className="flex items-center gap-1 shrink-0">
+      <div className="flex items-center gap-1.5 shrink-0">
         <Button
           type="button"
-          variant={isLocked ? "destructive" : "outline"}
+          variant="outline"
           size="sm"
-          className="h-8 text-xs gap-1"
+          className={`sheet-toolbar-btn ${isLocked ? "sheet-toolbar-btn--danger" : "sheet-toolbar-btn--lock"}`}
           disabled={busy}
           onClick={toggleLock}
           title={isLocked ? t("weekLock.unlockWeek") : t("weekLock.lockWeek")}
@@ -146,7 +146,7 @@ export function WeekLockControls({
           type="button"
           variant="outline"
           size="sm"
-          className="h-8 text-xs gap-1"
+          className="sheet-toolbar-btn sheet-toolbar-btn--schedule"
           disabled={busy || isLocked}
           onClick={() => setScheduleOpen(true)}
           title={t("weekLock.scheduleLock")}
@@ -158,7 +158,7 @@ export function WeekLockControls({
           type="button"
           variant="outline"
           size="sm"
-          className="h-8 text-xs gap-1"
+          className="sheet-toolbar-btn sheet-toolbar-btn--grant"
           disabled={busy || !isLocked}
           onClick={() => setGrantOpen(true)}
           title={t("weekLock.grantAccess")}

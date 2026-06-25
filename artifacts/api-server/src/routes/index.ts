@@ -8,7 +8,6 @@ import analyticsRouter from "./analytics";
 import weeklyRouter from "./weekly";
 import boardWeeksRouter from "./board-weeks";
 import notificationsRouter from "./notifications";
-import accountingRouter from "./accounting";
 import weekLocksRouter from "./week-locks";
 
 const router: IRouter = Router();
@@ -22,7 +21,6 @@ router.use("/analytics", analyticsRouter);
 router.use("/weekly", weeklyRouter);
 router.use("/board-weeks", boardWeeksRouter);
 router.use("/notifications", notificationsRouter);
-router.use("/accounting", accountingRouter);
 router.use("/week-locks", weekLocksRouter);
 
 export default router;

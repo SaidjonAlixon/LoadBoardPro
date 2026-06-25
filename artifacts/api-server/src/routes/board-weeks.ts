@@ -77,7 +77,7 @@ router.get("/", requireAuth, async (_req, res) => {
 });
 
 // POST /api/board-weeks — open the next calendar week for everyone
-router.post("/", requireAuth, requireRole("admin", "dispatcher"), async (req: AuthRequest, res) => {
+router.post("/", requireAuth, requireRole("admin", "dispatcher", "accounting"), async (req: AuthRequest, res) => {
   await ensureCurrentWeekRegistered();
 
   const existing = await db

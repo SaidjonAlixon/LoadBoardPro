@@ -120,12 +120,12 @@ export function LoadsWeekToolbar({
   return (
     <>
       <div className="flex items-center gap-1.5 shrink-0">
-        <div className="flex items-center border border-border rounded-md bg-card overflow-hidden h-8 shrink-0">
+        <div className="sheet-toolbar-week flex items-center overflow-hidden h-8 shrink-0">
           <Button
             type="button"
             variant="ghost"
             size="icon"
-            className="h-8 w-7 rounded-none shrink-0"
+            className="sheet-toolbar-week-btn h-8 w-8 rounded-none shrink-0"
             disabled={!canGoOlder}
             onClick={() => navigate(1)}
             title={t("loads.weekOlder")}
@@ -137,20 +137,22 @@ export function LoadsWeekToolbar({
               <Button
                 type="button"
                 variant="ghost"
-                className="h-8 px-2.5 rounded-none text-xs font-medium gap-1.5 shrink-0"
+                className="sheet-toolbar-week-btn h-8 px-2.5 rounded-none text-xs gap-1.5 shrink-0"
                 title={formatWeekRangeLabel(active, formatDate)}
               >
-                <Calendar className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <Calendar className="sheet-toolbar-week-icon h-3.5 w-3.5 shrink-0" />
                 {activeWeekLocked && (
-                  <Lock className="h-3 w-3 shrink-0 text-red-600" aria-label={t("weekLock.locked")} />
+                  <Lock className="h-3 w-3 shrink-0 text-red-600 dark:text-red-400" aria-label={t("weekLock.locked")} />
                 )}
-                <span className="whitespace-nowrap">{formatWeekRangeLabel(active, formatDate)}</span>
+                <span className="sheet-toolbar-week-label whitespace-nowrap">
+                  {formatWeekRangeLabel(active, formatDate)}
+                </span>
                 {isViewingCurrentWeek && (
-                  <span className="text-[9px] font-bold uppercase tracking-wide text-green-800 bg-green-100 px-1 py-0.5 rounded shrink-0">
+                  <span className="sheet-toolbar-badge-active text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0">
                     {t("dashboard.weekActive")}
                   </span>
                 )}
-                <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
+                <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-72 p-1" align="end">
@@ -182,7 +184,7 @@ export function LoadsWeekToolbar({
                           {formatWeekRangeLabel(ws, formatDate)}
                         </span>
                         {isCurrentCalendarWeek && (
-                          <span className="text-[9px] font-bold uppercase tracking-wide text-green-800 bg-green-100 px-1.5 py-0.5 rounded shrink-0">
+                          <span className="sheet-toolbar-badge-active text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0">
                             {t("dashboard.weekActive")}
                           </span>
                         )}
@@ -200,7 +202,7 @@ export function LoadsWeekToolbar({
             type="button"
             variant="ghost"
             size="icon"
-            className="h-8 w-7 rounded-none shrink-0"
+            className="sheet-toolbar-week-btn h-8 w-8 rounded-none shrink-0"
             disabled={!canGoNewer}
             onClick={() => navigate(-1)}
             title={t("loads.weekNewer")}
@@ -213,7 +215,7 @@ export function LoadsWeekToolbar({
           type="button"
           variant="outline"
           size="sm"
-          className="h-8 text-xs gap-1 border-border"
+          className="sheet-toolbar-btn sheet-toolbar-btn--add"
           disabled={creatingWeek}
           onClick={() => setConfirmOpen(true)}
         >

@@ -76,7 +76,7 @@ export function WeekPendingRequestsButton({ t }: Props) {
         type="button"
         variant="outline"
         size="sm"
-        className="h-8 text-xs gap-1 border-amber-300 text-amber-800"
+        className="sheet-toolbar-btn sheet-toolbar-btn--warn"
         onClick={() => setOpen(true)}
       >
         <Bell className="h-3.5 w-3.5" />

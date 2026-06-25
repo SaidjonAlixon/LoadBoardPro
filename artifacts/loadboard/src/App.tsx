@@ -10,7 +10,6 @@ import LoadsList from "./pages/loads";
 import LoadDetail from "./pages/load-detail";
 import DriversList from "./pages/drivers";
 import DriverDetail from "./pages/driver-detail";
-import Accounting from "./pages/accounting";
 import Notifications from "./pages/notifications";
 import Settings from "./pages/settings";
 import AdminPanel from "./pages/admin";
@@ -49,20 +48,6 @@ function ProtectedRoute({ component: Component }: { component: React.ComponentTy
   );
 }
 
-function AccountingRoute() {
-  const { user, isLoading } = useAuth();
-  if (isLoading) return <AppLoading />;
-  if (!user) return <Redirect to="/sign-in" />;
-  if (user.role !== "admin" && user.role !== "accounting") {
-    return <Redirect to="/dashboard" />;
-  }
-  return (
-    <Layout>
-      <Accounting />
-    </Layout>
-  );
-}
-
 function AppRoutes() {
   return (
     <Switch>
@@ -74,7 +59,7 @@ function AppRoutes() {
       <Route path="/loads/:id"><ProtectedRoute component={LoadDetail} /></Route>
       <Route path="/drivers"><ProtectedRoute component={DriversList} /></Route>
       <Route path="/drivers/:id"><ProtectedRoute component={DriverDetail} /></Route>
-      <Route path="/accounting" component={AccountingRoute} />
+      <Route path="/accounting"><Redirect to="/loads" /></Route>
       <Route path="/notifications"><ProtectedRoute component={Notifications} /></Route>
       <Route path="/settings"><ProtectedRoute component={Settings} /></Route>
       <Route path="/admin"><ProtectedRoute component={AdminPanel} /></Route>

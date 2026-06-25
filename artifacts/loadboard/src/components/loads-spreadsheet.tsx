@@ -22,7 +22,19 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, Eye, Trash2, Columns2, GripVertical, DollarSign, Route, TrendingUp, Divide } from "lucide-react";
+import {
+  Plus,
+  Eye,
+  Trash2,
+  Columns2,
+  GripVertical,
+  DollarSign,
+  Route,
+  TrendingUp,
+  Divide,
+  AlertTriangle,
+  Check,
+} from "lucide-react";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -395,47 +407,82 @@ function ReadOnlyMoneyCell({
   );
 }
 
+function accountingFinancialFlags(load: Load) {
+  const biDiff = load.biDiff ?? null;
+  const irDiff = load.irDiff ?? null;
+  return {
+    biDiff,
+    irDiff,
+    hasIssue: biDiff !== null && biDiff < 0,
+    isPending: load.invoicedAmount !== null && load.brokerPaid === null,
+  };
+}
+
 function SheetToolbarStat({
   label,
   value,
   icon: Icon,
   iconWrapClass,
   labelClass,
-  compact = false,
+  layout = "card",
 }: {
   label: string;
   value: string;
   icon: typeof DollarSign;
   iconWrapClass: string;
   labelClass: string;
-  compact?: boolean;
+  layout?: "card" | "compact" | "fill";
 }) {
-  if (compact) {
+  if (layout === "compact") {
     return (
       <div
-        className="flex h-[34px] min-w-[5rem] max-w-[6.5rem] shrink-0 flex-col justify-center rounded border border-border/60 bg-card/80 px-1.5 py-0.5 shadow-sm"
+        className="flex h-9 min-w-[5.5rem] max-w-[7rem] shrink-0 flex-col justify-center rounded-md border border-border/60 bg-card/80 px-2 py-1 shadow-sm"
         title={`${label}: ${value}`}
       >
-        <span className={`truncate text-[7px] font-bold uppercase leading-tight tracking-wide ${labelClass}`}>
+        <span className={`truncate text-[9px] font-bold uppercase leading-tight tracking-wide ${labelClass}`}>
           {label}
         </span>
-        <span className="truncate text-[10px] font-bold tabular-nums leading-tight text-foreground">
+        <span className="truncate text-xs font-bold tabular-nums leading-tight text-foreground">
           {value}
         </span>
       </div>
     );
   }
 
+  const fill = layout === "fill";
+
   return (
     <div
-      className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border/70 bg-card px-2 shadow-sm"
+      className={`flex items-center gap-2 rounded-lg border border-border/60 bg-card/90 shadow-sm ${
+        fill
+          ? "min-w-0 w-full px-2 py-2 sm:gap-2.5 sm:px-2.5"
+          : "min-w-[8.5rem] max-w-[11rem] flex-1 gap-2.5 px-3 py-2"
+      }`}
       title={`${label}: ${value}`}
     >
-      <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${iconWrapClass}`}>
-        <Icon className="h-3.5 w-3.5" />
+      <div
+        className={`flex shrink-0 items-center justify-center rounded-lg ${iconWrapClass} ${
+          fill ? "h-8 w-8" : "h-9 w-9"
+        }`}
+      >
+        <Icon className={fill ? "h-3.5 w-3.5" : "h-4 w-4"} />
       </div>
-      <span className={`text-[9px] font-bold uppercase tracking-wide ${labelClass}`}>{label}</span>
-      <span className="text-[11px] font-bold tabular-nums text-foreground">{value}</span>
+      <div className="min-w-0 flex-1 overflow-hidden">
+        <div
+          className={`truncate font-semibold uppercase tracking-wide ${labelClass} ${
+            fill ? "text-[9px] leading-tight sm:text-[10px]" : "text-[10px]"
+          }`}
+        >
+          {label}
+        </div>
+        <div
+          className={`truncate font-bold tabular-nums text-foreground ${
+            fill ? "text-[11px] leading-tight sm:text-xs md:text-sm" : "text-sm"
+          }`}
+        >
+          {value}
+        </div>
+      </div>
     </div>
   );
 }
@@ -679,6 +726,90 @@ export function LoadsSpreadsheet({
   const compactRoute = canToggleRouteDetails && !showRouteDetails;
   const wide = (canToggleFinancial && !showFinancial) || compactRoute;
   const isFullView = canToggleRouteDetails ? showRouteDetails : showFinancial;
+
+  const showExtendedToolbarStats =
+    weekLoadsAll.length > 0 &&
+    (userRole === "accounting" || userRole === "admin" || userRole === "dispatcher");
+
+  const toolbarStats = useMemo(() => {
+    if ((kpi?.totalLoads ?? 0) === 0) return [];
+    const stats: Array<{
+      label: string;
+      value: string;
+      icon: typeof DollarSign;
+      iconWrapClass: string;
+      labelClass: string;
+    }> = [
+      {
+        label: t("dashboard.totalGross"),
+        value: formatCurrency(kpi?.totalGross ?? 0),
+        icon: DollarSign,
+        iconWrapClass: "bg-sky-100 text-sky-600 dark:bg-sky-500/20 dark:text-sky-300",
+        labelClass: "text-sky-700 dark:text-sky-300",
+      },
+      {
+        label: t("dashboard.totalMiles"),
+        value: formatNumber(kpi?.totalMiles ?? 0),
+        icon: Route,
+        iconWrapClass: "bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-300",
+        labelClass: "text-violet-700 dark:text-violet-300",
+      },
+      {
+        label: t("dashboard.avgRpm"),
+        value: formatCurrency(kpi?.avgRpm ?? 0),
+        icon: TrendingUp,
+        iconWrapClass: "bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300",
+        labelClass: "text-emerald-700 dark:text-emerald-300",
+      },
+      {
+        label: t("dashboard.grossPerDriver"),
+        value: formatCurrency(kpi?.grossPerDriver ?? 0),
+        icon: Divide,
+        iconWrapClass: "bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300",
+        labelClass: "text-amber-800 dark:text-amber-300",
+      },
+    ];
+    if (showExtendedToolbarStats) {
+      stats.push(
+        {
+          label: t("loads.sheet.reimbursement"),
+          value: fullViewFinancialTotals.totalReimb
+            ? formatCurrency(fullViewFinancialTotals.totalReimb)
+            : t("common.emDash"),
+          icon: DollarSign,
+          iconWrapClass: "bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300",
+          labelClass: "text-orange-800 dark:text-orange-300",
+        },
+        {
+          label: t("loads.sheet.invoicedAmount"),
+          value: formatCurrency(fullViewFinancialTotals.totalInvoiced),
+          icon: DollarSign,
+          iconWrapClass: "bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300",
+          labelClass: "text-cyan-800 dark:text-cyan-300",
+        },
+        {
+          label: t("loads.sheet.brokerPaid"),
+          value: formatCurrency(fullViewFinancialTotals.totalPaid),
+          icon: DollarSign,
+          iconWrapClass: "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300",
+          labelClass: "text-indigo-800 dark:text-indigo-300",
+        },
+      );
+    }
+    return stats;
+  }, [
+    kpi?.totalGross,
+    kpi?.totalLoads,
+    kpi?.totalMiles,
+    kpi?.avgRpm,
+    kpi?.grossPerDriver,
+    showExtendedToolbarStats,
+    fullViewFinancialTotals,
+    formatCurrency,
+    formatNumber,
+    t,
+  ]);
+
   const rawWidths = columnWidths ?? getDefaultSheetWidths(wide, showFinancial);
   const baseEffectiveWidths = filterVisibleWidths(rawWidths, {
     showRouteDetails,
@@ -1240,8 +1371,13 @@ export function LoadsSpreadsheet({
     )
   ) : null;
 
+  const showAccountingFinancialStyle = userRole === "accounting" && showFinancial;
+
   const renderFinancialCells = (load: Load) => {
     if (!showFinancial) return null;
+    const { biDiff, irDiff, hasIssue, isPending } = accountingFinancialFlags(load);
+    const moneyCellCls = wide ? "px-2.5 py-1.5 font-medium tabular-nums" : "font-medium tabular-nums";
+
     return (
       <>
         {canEditField(userRole, "invoicedAmount", load, activeDraftLoadId, currentUserId, weekEditable) ? (
@@ -1249,9 +1385,32 @@ export function LoadsSpreadsheet({
             editable
             value={String(load.invoicedAmount ?? "")}
             display={
-              load.invoicedAmount != null
-                ? formatCurrency(load.invoicedAmount)
-                : t("common.emDash")
+              showAccountingFinancialStyle ? (
+                load.invoicedAmount != null ? (
+                  <div className="min-w-0">
+                    <span>{formatCurrency(load.invoicedAmount)}</span>
+                    {irDiff !== null && (
+                      <div
+                        className={`text-[10px] truncate ${
+                          irDiff < 0
+                            ? "!text-orange-500 dark:!text-orange-400"
+                            : "!text-green-600 dark:!text-green-400"
+                        }`}
+                      >
+                        {t("accounting.irDiff", {
+                          amount: `${irDiff >= 0 ? "+" : ""}${formatCurrency(irDiff)}`,
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <span className="text-[10px] text-muted-foreground">{t("accounting.notInvoiced")}</span>
+                )
+              ) : load.invoicedAmount != null ? (
+                formatCurrency(load.invoicedAmount)
+              ) : (
+                t("common.emDash")
+              )
             }
             tooltip={
               load.invoicedAmount != null ? formatCurrency(load.invoicedAmount) : undefined
@@ -1265,23 +1424,69 @@ export function LoadsSpreadsheet({
         ) : (
           <ReadOnlyMoneyCell value={load.invoicedAmount} formatCurrency={formatCurrency} />
         )}
-        <ReadOnlyMoneyCell
-          value={load.irDiff}
-          formatCurrency={formatCurrency}
-          highlightNegative
-        />
+        {showAccountingFinancialStyle ? (
+          <td className={`${READONLY_CELL} accounting-money-cell`} title={irDiff != null ? formatCurrency(irDiff) : undefined}>
+            {irDiff !== null ? (
+              <span
+                className={`inline-flex items-center gap-0.5 font-medium tabular-nums ${
+                  irDiff < 0
+                    ? "!text-orange-500 dark:!text-orange-400"
+                    : "!text-green-600 dark:!text-green-400"
+                }`}
+              >
+                {irDiff >= 0 ? "+" : ""}
+                {formatCurrency(irDiff)}
+              </span>
+            ) : (
+              t("common.emDash")
+            )}
+          </td>
+        ) : (
+          <ReadOnlyMoneyCell
+            value={load.irDiff}
+            formatCurrency={formatCurrency}
+            highlightNegative
+          />
+        )}
         {canEditField(userRole, "brokerPaid", load, activeDraftLoadId, currentUserId, weekEditable) ? (
           <SheetEditableCell
             editable
             value={String(load.brokerPaid ?? "")}
             display={
-              load.brokerPaid != null
-                ? formatCurrency(load.brokerPaid)
-                : t("common.emDash")
+              showAccountingFinancialStyle ? (
+                load.brokerPaid != null ? (
+                  <div className="flex min-w-0 items-center justify-center gap-1">
+                    {!hasIssue && <Check className="h-3 w-3 shrink-0 !text-green-600 dark:!text-green-400" />}
+                    <span
+                      className={
+                        hasIssue
+                          ? "!text-red-500 dark:!text-red-400"
+                          : "!text-green-600 dark:!text-green-400"
+                      }
+                    >
+                      {formatCurrency(load.brokerPaid)}
+                    </span>
+                  </div>
+                ) : (
+                  <span
+                    className={`text-[10px] font-medium ${
+                      isPending
+                        ? "!text-orange-500 dark:!text-orange-400"
+                        : "text-muted-foreground"
+                    }`}
+                  >
+                    {isPending ? t("accounting.pending") : t("common.emDash")}
+                  </span>
+                )
+              ) : load.brokerPaid != null ? (
+                formatCurrency(load.brokerPaid)
+              ) : (
+                t("common.emDash")
+              )
             }
             tooltip={load.brokerPaid != null ? formatCurrency(load.brokerPaid) : undefined}
             inputType="number"
-            className={wide ? "px-2.5 py-1.5" : ""}
+            className={moneyCellCls}
             onSave={async (v) =>
               patchLoad(load.id, { brokerPaid: v ? Number(v) : null })
             }
@@ -1289,12 +1494,32 @@ export function LoadsSpreadsheet({
         ) : (
           <ReadOnlyMoneyCell value={load.brokerPaid} formatCurrency={formatCurrency} />
         )}
-        <ReadOnlyMoneyCell
-          value={load.biDiff}
-          formatCurrency={formatCurrency}
-          highlightNegative
-          className="border-r-0"
-        />
+        {showAccountingFinancialStyle ? (
+          <td className={`${READONLY_CELL} accounting-money-cell border-r-0`}>
+            {biDiff !== null ? (
+              <span
+                className={`inline-flex items-center gap-0.5 font-medium tabular-nums ${
+                  biDiff < 0
+                    ? "!text-red-500 dark:!text-red-400"
+                    : "!text-green-600 dark:!text-green-400"
+                }`}
+              >
+                {biDiff < 0 && <AlertTriangle className="h-3 w-3 shrink-0" />}
+                {biDiff >= 0 ? "+" : ""}
+                {formatCurrency(biDiff)}
+              </span>
+            ) : (
+              t("common.emDash")
+            )}
+          </td>
+        ) : (
+          <ReadOnlyMoneyCell
+            value={load.biDiff}
+            formatCurrency={formatCurrency}
+            highlightNegative
+            className="border-r-0"
+          />
+        )}
       </>
     );
   };
@@ -1366,14 +1591,35 @@ export function LoadsSpreadsheet({
               return (
                 <td
                   key={col}
-                  className={`${totalMoneyCls} ${totalIr < 0 ? "text-red-200" : ""}`}
+                  className={`${totalMoneyCls} ${
+                    showAccountingFinancialStyle
+                      ? totalIr < 0
+                        ? "text-orange-300"
+                        : "text-green-300"
+                      : totalIr < 0
+                        ? "text-red-200"
+                        : ""
+                  }`}
                 >
-                  {hasFinancialTotals ? formatCurrency(totalIr) : t("common.emDash")}
+                  {hasFinancialTotals
+                    ? showAccountingFinancialStyle
+                      ? `${totalIr >= 0 ? "+" : ""}${formatCurrency(totalIr)}`
+                      : formatCurrency(totalIr)
+                    : t("common.emDash")}
                 </td>
               );
             case "brokerPaid":
               return (
-                <td key={col} className={totalMoneyCls}>
+                <td
+                  key={col}
+                  className={`${totalMoneyCls} ${
+                    showAccountingFinancialStyle && hasFinancialTotals && totalBi < 0
+                      ? "text-red-300"
+                      : showAccountingFinancialStyle && hasFinancialTotals
+                        ? "text-green-300"
+                        : ""
+                  }`}
+                >
                   {hasFinancialTotals && totalPaid !== 0
                     ? formatCurrency(totalPaid)
                     : hasFinancialTotals
@@ -1385,9 +1631,21 @@ export function LoadsSpreadsheet({
               return (
                 <td
                   key={col}
-                  className={`${totalMoneyCls} ${isLast ? "border-r-0" : ""} ${totalBi < 0 ? "text-red-200" : ""}`}
+                  className={`${totalMoneyCls} ${isLast ? "border-r-0" : ""} ${
+                    showAccountingFinancialStyle
+                      ? totalBi < 0
+                        ? "text-red-300"
+                        : "text-green-300"
+                      : totalBi < 0
+                        ? "text-red-200"
+                        : ""
+                  }`}
                 >
-                  {hasFinancialTotals ? formatCurrency(totalBi) : t("common.emDash")}
+                  {hasFinancialTotals
+                    ? showAccountingFinancialStyle
+                      ? `${totalBi >= 0 ? "+" : ""}${formatCurrency(totalBi)}`
+                      : formatCurrency(totalBi)
+                    : t("common.emDash")}
                 </td>
               );
             case "select":
@@ -1415,11 +1673,11 @@ export function LoadsSpreadsheet({
   return (
     <div className="relative flex flex-col min-h-0 h-full">
       <div className="flex shrink-0 flex-col border-b border-border/60 bg-muted/25 backdrop-blur-sm">
-        <div className="flex min-h-[38px] items-center gap-1.5 px-2 py-1">
-          <div className="flex min-w-0 shrink-0 items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-2 px-3 py-2.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             {toolbarLeading}
             {toolbarLeading && (onWeekChange || userRole === "accounting" || userRole === "admin") ? (
-              <div className="hidden h-5 w-px shrink-0 bg-border/70 sm:block" aria-hidden />
+              <div className="hidden h-7 w-px shrink-0 bg-border/70 sm:block" aria-hidden />
             ) : null}
             {onWeekChange && onCreateWeek ? (
               <LoadsWeekToolbar
@@ -1430,7 +1688,7 @@ export function LoadsSpreadsheet({
                 creatingWeek={creatingWeek}
                 formatDate={formatDate}
                 t={t}
-                canManageWeeks={userRole === "admin" || userRole === "dispatcher"}
+                canManageWeeks={userRole === "admin" || userRole === "dispatcher" || userRole === "accounting"}
               />
             ) : null}
             {(userRole === "accounting" || userRole === "admin") && (
@@ -1451,125 +1709,71 @@ export function LoadsSpreadsheet({
             )}
           </div>
 
-          <div className="flex min-w-0 flex-1 items-center justify-end gap-1 overflow-hidden">
-            {isLoading || kpiLoading ? (
-              <Skeleton className="h-[34px] w-48 shrink-0 rounded-md" />
-            ) : (kpi?.totalLoads ?? 0) > 0 ? (
-              <div className="flex min-w-0 flex-nowrap items-center gap-1 overflow-x-auto scrollbar-none">
-                <SheetToolbarStat
-                  compact={isFullView}
-                  label={t("dashboard.totalGross")}
-                  value={formatCurrency(kpi?.totalGross ?? 0)}
-                  icon={DollarSign}
-                  iconWrapClass="bg-sky-100 text-sky-600 dark:bg-sky-500/20 dark:text-sky-300"
-                  labelClass="text-sky-700 dark:text-sky-300"
-                />
-                <SheetToolbarStat
-                  compact={isFullView}
-                  label={t("dashboard.totalMiles")}
-                  value={formatNumber(kpi?.totalMiles ?? 0)}
-                  icon={Route}
-                  iconWrapClass="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-300"
-                  labelClass="text-violet-700 dark:text-violet-300"
-                />
-                <SheetToolbarStat
-                  compact={isFullView}
-                  label={t("dashboard.avgRpm")}
-                  value={formatCurrency(kpi?.avgRpm ?? 0)}
-                  icon={TrendingUp}
-                  iconWrapClass="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300"
-                  labelClass="text-emerald-700 dark:text-emerald-300"
-                />
-                <SheetToolbarStat
-                  compact={isFullView}
-                  label={t("dashboard.grossPerDriver")}
-                  value={formatCurrency(kpi?.grossPerDriver ?? 0)}
-                  icon={Divide}
-                  iconWrapClass="bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300"
-                  labelClass="text-amber-800 dark:text-amber-300"
-                />
-                {isFullView && weekLoadsAll.length > 0 && (
-                  <>
-                    <SheetToolbarStat
-                      compact
-                      label={t("loads.sheet.reimbursement")}
-                      value={
-                        fullViewFinancialTotals.totalReimb
-                          ? formatCurrency(fullViewFinancialTotals.totalReimb)
-                          : t("common.emDash")
-                      }
-                      icon={DollarSign}
-                      iconWrapClass="bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300"
-                      labelClass="text-orange-800 dark:text-orange-300"
-                    />
-                    {showFinancial && (
-                      <>
-                        <SheetToolbarStat
-                          compact
-                          label={t("loads.sheet.invoicedAmount")}
-                          value={formatCurrency(fullViewFinancialTotals.totalInvoiced)}
-                          icon={DollarSign}
-                          iconWrapClass="bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300"
-                          labelClass="text-cyan-800 dark:text-cyan-300"
-                        />
-                        <SheetToolbarStat
-                          compact
-                          label={t("loads.sheet.brokerPaid")}
-                          value={formatCurrency(fullViewFinancialTotals.totalPaid)}
-                          icon={DollarSign}
-                          iconWrapClass="bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300"
-                          labelClass="text-indigo-800 dark:text-indigo-300"
-                        />
-                      </>
-                    )}
-                  </>
-                )}
-              </div>
-            ) : null}
-            <div className="flex shrink-0 items-center gap-1 pl-0.5">
-              {(canToggleRouteDetails || canToggleFinancial) && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className={`h-7 px-2 text-[11px] gap-1 ${
-                    isFullView
-                      ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
-                      : "border-border text-muted-foreground"
-                  }`}
-                  onClick={toggleFullView}
-                  title={
-                    isFullView
-                      ? canToggleRouteDetails
-                        ? t("loads.sheet.hideRouteDetails")
-                        : t("loads.sheet.hideFinancial")
-                      : canToggleRouteDetails
-                        ? t("loads.sheet.showRouteDetails")
-                        : t("loads.sheet.showFinancial")
-                  }
-                  data-testid="sheet-full-view"
-                >
-                  <Eye className="h-3 w-3" />
-                  <span className="hidden xl:inline">{t("loads.sheet.fullView")}</span>
-                </Button>
-              )}
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {(canToggleRouteDetails || canToggleFinancial) && (
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-7 px-2 text-[11px] border-border"
-                onClick={handleAutoFit}
-                data-testid="sheet-auto-fit"
-                title={t("loads.sheet.autoFit")}
+                className={
+                  isFullView
+                    ? "sheet-toolbar-btn sheet-toolbar-btn--view-on"
+                    : "sheet-toolbar-btn sheet-toolbar-btn--view"
+                }
+                onClick={toggleFullView}
+                title={
+                  isFullView
+                    ? canToggleRouteDetails
+                      ? t("loads.sheet.hideRouteDetails")
+                      : t("loads.sheet.hideFinancial")
+                    : canToggleRouteDetails
+                      ? t("loads.sheet.showRouteDetails")
+                      : t("loads.sheet.showFinancial")
+                }
+                data-testid="sheet-full-view"
               >
-                <Columns2 className="h-3 w-3" />
-                <span className="hidden xl:inline ml-1">{t("loads.sheet.autoFit")}</span>
+                <Eye className="h-3.5 w-3.5" />
+                {t("loads.sheet.fullView")}
               </Button>
-            </div>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="sheet-toolbar-btn sheet-toolbar-btn--layout"
+              onClick={handleAutoFit}
+              data-testid="sheet-auto-fit"
+              title={t("loads.sheet.autoFit")}
+            >
+              <Columns2 className="h-3.5 w-3.5" />
+              {t("loads.sheet.autoFit")}
+            </Button>
           </div>
         </div>
+
+        {(isLoading || kpiLoading) && (
+          <div className="border-t border-border/40 px-3 py-2.5">
+            <Skeleton className="h-14 w-full max-w-3xl rounded-lg" />
+          </div>
+        )}
+        {!isLoading && !kpiLoading && toolbarStats.length > 0 && (
+          <div className="border-t border-border/40 bg-muted/10 px-3 py-2.5">
+            <div
+              className={`grid w-full gap-2 ${
+                showExtendedToolbarStats
+                  ? "grid-cols-2 sm:grid-cols-4 lg:grid-cols-7"
+                  : "grid-cols-2 sm:grid-cols-4"
+              }`}
+            >
+              {toolbarStats.map((stat) => (
+                <SheetToolbarStat key={stat.label} {...stat} layout="fill" />
+              ))}
+            </div>
+          </div>
+        )}
+
         {toolbarFilterPanel ? (
-          <div className="border-t border-border/50 px-2 py-1.5">{toolbarFilterPanel}</div>
+          <div className="border-t border-border/50 px-3 py-2.5">{toolbarFilterPanel}</div>
         ) : null}
       </div>
       {showGrantBanner && weekAccess?.grantExpiresAt && (

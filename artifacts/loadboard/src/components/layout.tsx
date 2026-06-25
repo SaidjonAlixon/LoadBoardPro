@@ -9,7 +9,6 @@ import {
   LayoutDashboard,
   Truck,
   Users,
-  Calculator,
   Bell,
   Settings,
   LogOut,
@@ -65,15 +64,10 @@ export default function Layout({ children }: LayoutProps) {
   const displayName = me?.name || user?.name || user?.email || t("common.user");
   const userRole = me?.role || user?.role || "dispatcher";
 
-  const showAccounting = userRole === "admin" || userRole === "accounting";
-
   const baseNavItems: NavItem[] = [
     { labelKey: "nav.dashboard", href: "/dashboard", icon: LayoutDashboard },
     { labelKey: "nav.loads", href: "/loads", icon: Truck },
     { labelKey: "nav.drivers", href: "/drivers", icon: Users },
-    ...(showAccounting
-      ? [{ labelKey: "nav.accounting", href: "/accounting", icon: Calculator }]
-      : []),
     { labelKey: "nav.notifications", href: "/notifications", icon: Bell, badge: unreadCount },
     { labelKey: "nav.settings", href: "/settings", icon: Settings },
   ];
@@ -182,7 +176,7 @@ export default function Layout({ children }: LayoutProps) {
   );
 
   const isFullWidth =
-    location === "/loads" || location === "/accounting" || location === "/dashboard";
+    location === "/loads" || location === "/dashboard";
   const isCompactPage = location === "/settings";
 
   const sidebarContent = (onNavClick?: () => void) => (
@@ -334,7 +328,11 @@ export default function Layout({ children }: LayoutProps) {
 
         <div
           className={`flex-1 overflow-auto bg-background ${
-            isFullWidth ? "p-2 md:p-3" : isCompactPage ? "p-3 md:p-4" : "p-4 md:p-8"
+            isFullWidth
+              ? "px-2 py-1 md:px-3 md:py-1.5"
+              : isCompactPage
+                ? "p-3 md:p-4"
+                : "p-4 md:p-8"
           }`}
         >
           <div

@@ -695,7 +695,6 @@ export default function AdminPanel() {
   const quickLinks = [
     { labelKey: "admin.linkDrivers", descKey: "admin.linkDriversDesc", href: "/drivers" },
     { labelKey: "admin.linkLoads", descKey: "admin.linkLoadsDesc", href: "/loads" },
-    { labelKey: "admin.linkAccounting", descKey: "admin.linkAccountingDesc", href: "/accounting" },
     { labelKey: "admin.linkNotifications", descKey: "admin.linkNotificationsDesc", href: "/notifications" },
   ] as const;
 
