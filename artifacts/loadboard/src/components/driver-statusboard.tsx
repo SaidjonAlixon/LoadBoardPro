@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState, Fragment } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useListDrivers, type Driver } from "@workspace/api-client-react";
 import type { DriverTodayBlock, DriverChipFilter, DispatcherDriverGroup } from "@/lib/drivers-today";
 import { filterStatusboardSections } from "@/lib/drivers-today";
 import {
@@ -14,7 +15,10 @@ import {
 import { useI18n } from "@/lib/i18n";
 import { invalidateDriverQueries } from "@/lib/invalidate-driver-queries";
 import { canEditDriverBoardRow } from "@/lib/can-edit-driver-board-row";
-import { getThisWeekStart } from "@/lib/date-range";
+import { QuickAddDriverDialog } from "@/components/quick-add-driver-dialog";
+import { DriverSearchSelect, MODERN_ADD_BTN } from "@/components/driver-search-select";
+import { Button } from "@/components/ui/button";
+import { Plus, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { parseCityState, formatLocationForEdit } from "@/components/sheet-editable-cell";
 import { isLoadDispatcherLocked } from "@/lib/load-statuses";
@@ -52,7 +56,13 @@ function resolveBoardLoad(
   return block.loads.find((l) => l.dispatcherId === sectionDispatcherId) ?? block.loads[0];
 }
 
-const COL_COUNT = 13;
+const MODERN_ADD_ICON = "h-2.5 w-2.5 stroke-[3]";
+
+const COL_COUNT = 14;
+
+function sectionKey(section: { dispatcherId: string | null; dispatcherName: string }): string {
+  return section.dispatcherId ?? `unassigned:${section.dispatcherName}`;
+}
 
 function cityState(city: string, state: string): string {
   if (!city || city === "-") return "";
@@ -80,11 +90,11 @@ type DriverStatusboardProps = {
   dispatcherFilterKey?: string | null;
   drivers: DriverTodayBlock[];
   groups?: DispatcherDriverGroup[];
-  weekLabel: string;
   weekStart: string;
   groupByDispatcher: boolean;
   editorUserId?: string | null;
   editorRole?: string | null;
+  scopedDispatcherId?: string | null;
 };
 
 export function DriverStatusboard({
@@ -93,11 +103,11 @@ export function DriverStatusboard({
   dispatcherFilterKey = null,
   drivers,
   groups,
-  weekLabel,
   weekStart,
   groupByDispatcher,
   editorUserId,
   editorRole,
+  scopedDispatcherId = null,
 }: DriverStatusboardProps) {
   const { t, formatDate } = useI18n();
   const formatDateTime = useCallback(
@@ -114,6 +124,24 @@ export function DriverStatusboard({
   const qc = useQueryClient();
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [statusOverrides, setStatusOverrides] = useState<Record<string, DriverBoardStatus>>({});
+  const [draftSectionKey, setDraftSectionKey] = useState<string | null>(null);
+  const [draftDriverId, setDraftDriverId] = useState("");
+  const [draftSectionDispatcherId, setDraftSectionDispatcherId] = useState<string | null>(null);
+  const [addingRow, setAddingRow] = useState(false);
+  const [driverAddOpen, setDriverAddOpen] = useState(false);
+  const [swapDriverLoadId, setSwapDriverLoadId] = useState<string | null>(null);
+
+  const resolveFlatDispatcherId = useCallback((): string | null => {
+    if (scopedDispatcherId) return scopedDispatcherId;
+    if (editorRole === "dispatcher" && editorUserId) return editorUserId;
+    return null;
+  }, [editorRole, editorUserId, scopedDispatcherId]);
+
+  const { data: driversList } = useListDrivers({ isActive: true });
+  const activeDrivers = useMemo(
+    () => (driversList ?? []).filter((d: Driver) => d.isActive),
+    [driversList],
+  );
 
   const patchDriver = useCallback(
     async (driverId: string, body: Record<string, unknown>) => {
@@ -209,13 +237,119 @@ export function DriverStatusboard({
           throw new Error((err as { error?: string }).error ?? "create failed");
         }
         const created = (await res.json()) as { id: string };
-        return patchLoad(created.id, { loadNumber });
+        if (loadNumber.trim()) {
+          return patchLoad(created.id, { loadNumber });
+        }
+        await Promise.all([
+          invalidateDriverQueries(qc),
+          qc.invalidateQueries({ queryKey: ["/api/loads"] }),
+          qc.invalidateQueries({ queryKey: ["/api/analytics"] }),
+        ]);
+        return true;
       } catch {
         toast.error(t("statusboard.loadSaveFailed"));
         return false;
       }
     },
-    [editorRole, editorUserId, weekStart, patchLoad, t],
+    [editorRole, editorUserId, weekStart, patchLoad, qc, t],
+  );
+
+  const startDraftRow = useCallback(
+    (section: { dispatcherId: string | null; dispatcherName: string }) => {
+      if (draftSectionKey) {
+        toast.error(t("statusboard.finishDraftFirst"));
+        return;
+      }
+      setDraftSectionKey(sectionKey(section));
+      setDraftSectionDispatcherId(section.dispatcherId);
+      setDraftDriverId("");
+    },
+    [draftSectionKey, t],
+  );
+
+  const cancelDraftRow = useCallback(() => {
+    setDraftSectionKey(null);
+    setDraftSectionDispatcherId(null);
+    setDraftDriverId("");
+  }, []);
+
+  const confirmDraftDriver = useCallback(
+    async (driverId: string) => {
+      if (!driverId || addingRow) return;
+      setAddingRow(true);
+      const ok = await createLoadForDriver(driverId, "", draftSectionDispatcherId);
+      if (ok) {
+        cancelDraftRow();
+      }
+      setAddingRow(false);
+    },
+    [addingRow, cancelDraftRow, createLoadForDriver, draftSectionDispatcherId],
+  );
+
+  const swapDriverOnLoad = useCallback(
+    async (loadId: string, driverId: string) => {
+      if (!driverId) return;
+      setSavingKey(`load:${loadId}`);
+      try {
+        const res = await fetch(`/api/loads/${loadId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ driverId }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error((err as { error?: string }).error ?? "save failed");
+        }
+        await Promise.all([
+          invalidateDriverQueries(qc),
+          qc.invalidateQueries({ queryKey: ["/api/loads"] }),
+          qc.invalidateQueries({ queryKey: ["/api/analytics"] }),
+        ]);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : t("statusboard.driverSwapFailed");
+        if (message === "No valid fields to update") {
+          toast.error(t("statusboard.driverSwapFailed"));
+        } else if (message === "save failed") {
+          toast.error(t("statusboard.driverSwapFailed"));
+        } else {
+          toast.error(message);
+        }
+      } finally {
+        setSavingKey(null);
+      }
+    },
+    [qc, t],
+  );
+
+  const deleteLoadRow = useCallback(
+    async (load: { id: string; loadNumber?: string | null }) => {
+      const label = load.loadNumber?.trim() || load.id.slice(0, 8);
+      if (!window.confirm(t("loads.sheet.deleteRowConfirm", { loadNumber: label }))) return;
+      setSavingKey(`load:${load.id}`);
+      try {
+        const res = await fetch(`/api/loads/${load.id}`, {
+          method: "DELETE",
+          credentials: "include",
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error((err as { error?: string }).error ?? "delete failed");
+        }
+        await Promise.all([
+          invalidateDriverQueries(qc),
+          qc.invalidateQueries({ queryKey: ["/api/loads"] }),
+          qc.invalidateQueries({ queryKey: ["/api/analytics"] }),
+        ]);
+        toast.success(t("loads.sheet.deleteRowSuccess"));
+      } catch (e) {
+        const message = e instanceof Error ? e.message : t("loads.sheet.deleteRowFailed");
+        toast.error(message === "delete failed" ? t("loads.sheet.deleteRowFailed") : message);
+      } finally {
+        setSavingKey(null);
+      }
+    },
+    [qc, t],
   );
 
   const sections = useMemo(
@@ -231,7 +365,36 @@ export function DriverStatusboard({
     [groupByDispatcher, groups, drivers, filter, driverFilterId, dispatcherFilterKey],
   );
 
-  const totalRows = sections.reduce((n, s) => n + s.drivers.length, 0);
+  const displaySections = useMemo(() => {
+    if (!draftSectionKey) return sections;
+    if (sections.some((s) => sectionKey(s) === draftSectionKey)) return sections;
+    if (groupByDispatcher && groups?.length) {
+      const match = groups.find((g) => sectionKey(g) === draftSectionKey);
+      if (match) return [...sections, { ...match, drivers: [] }];
+    }
+    if (!groupByDispatcher) {
+      return [
+        {
+          dispatcherId: draftSectionDispatcherId ?? resolveFlatDispatcherId(),
+          dispatcherName: "",
+          drivers: [] as DriverTodayBlock[],
+        },
+      ];
+    }
+    return sections;
+  }, [draftSectionKey, draftSectionDispatcherId, groupByDispatcher, groups, resolveFlatDispatcherId, sections]);
+
+  const totalRows = displaySections.reduce((n, s) => n + s.drivers.length, 0);
+  const showTable = totalRows > 0 || draftSectionKey !== null;
+
+  const flatCanAdd =
+    !groupByDispatcher &&
+    canEditDriverBoardRow({
+      editorRole,
+      editorUserId,
+      sectionDispatcherId: editorRole === "dispatcher" ? editorUserId ?? null : null,
+      groupByDispatcher: false,
+    });
 
   const hdr = cn(
     "px-2 py-2.5 text-[10px] font-bold uppercase tracking-wide whitespace-nowrap sticky top-0 z-20",
@@ -309,8 +472,22 @@ export function DriverStatusboard({
             d.truckNumber ?? t("common.emDash")
           )}
         </td>
-        <td className={cn(cell, "font-semibold text-foreground min-w-[140px]")} onClick={(e) => e.stopPropagation()}>
-          {rowCanEdit ? (
+        <td className={cn(cell, "font-semibold text-foreground min-w-[160px]")} onClick={(e) => e.stopPropagation()}>
+          {rowCanEdit && load && loadCanEdit ? (
+            <DriverSearchSelect
+              value={d.id}
+              drivers={activeDrivers}
+              className="min-w-[150px]"
+              onValueChange={(v) => {
+                if (v === d.id) return;
+                void swapDriverOnLoad(load.id, v);
+              }}
+              onAddClick={() => {
+                setSwapDriverLoadId(load.id);
+                setDriverAddOpen(true);
+              }}
+            />
+          ) : rowCanEdit ? (
             <input
               className={cn(inputCls, "min-w-[120px] font-semibold")}
               defaultValue={d.fullName}
@@ -669,6 +846,87 @@ export function DriverStatusboard({
             }}
           />
         </td>
+        <td className={cn(cell, "text-center w-9 p-0")} onClick={(e) => e.stopPropagation()}>
+          {load && loadCanEdit ? (
+            <button
+              type="button"
+              title={t("loads.sheet.deleteRow")}
+              className="inline-flex items-center justify-center w-7 h-7 mx-auto rounded text-red-500 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 transition-colors disabled:opacity-40"
+              disabled={rowSaving}
+              data-testid={`statusboard-delete-row-${load.id}`}
+              onClick={() => void deleteLoadRow(load)}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
+        </td>
+      </tr>
+    );
+  };
+
+  const renderDraftRow = (section: DispatcherDriverGroup) => {
+    const sectionDriverIds = new Set(section.drivers.map((b) => b.driver.id));
+    const pickableDrivers = activeDrivers.filter((d: Driver) => !sectionDriverIds.has(d.id));
+    const preview = activeDrivers.find((d: Driver) => d.id === draftDriverId);
+
+    return (
+      <tr
+        key={`draft-${sectionKey(section)}`}
+        className="bg-primary/5 dark:bg-primary/10"
+        data-testid="statusboard-draft-row"
+      >
+        <td className={cn(cell, "tabular-nums whitespace-nowrap min-w-[88px]")}>
+          {preview?.truckNumber ?? t("common.emDash")}
+        </td>
+        <td className={cn(cell, "min-w-[180px]")} onClick={(e) => e.stopPropagation()}>
+          <DriverSearchSelect
+            value={draftDriverId}
+            drivers={pickableDrivers}
+            disabled={addingRow}
+            addDisabled={addingRow}
+            onValueChange={(v) => {
+              setDraftDriverId(v);
+              void confirmDraftDriver(v);
+            }}
+            onAddClick={() => setDriverAddOpen(true)}
+          />
+        </td>
+        <td className={cn(cell, "tabular-nums whitespace-nowrap")}>
+          {preview?.phone ?? t("common.emDash")}
+        </td>
+        <td className={cell}>
+          {preview ? (
+            <span
+              className={cn(
+                "inline-block rounded-md px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap",
+                DRIVER_TYPE_STYLES[preview.driverType] ??
+                  "bg-muted text-muted-foreground border border-border",
+              )}
+            >
+              {t(DRIVER_TYPE_KEYS[preview.driverType] ?? preview.driverType)}
+            </span>
+          ) : (
+            t("common.emDash")
+          )}
+        </td>
+        <td colSpan={COL_COUNT - 4} className={cn(cell, "text-muted-foreground text-[11px]")}>
+          <div className="flex items-center justify-between gap-2">
+            <span>
+              {addingRow ? t("statusboard.addingRow") : t("statusboard.selectDriver")}
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0"
+              title={t("common.cancel")}
+              disabled={addingRow}
+              onClick={cancelDraftRow}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </td>
       </tr>
     );
   };
@@ -683,20 +941,38 @@ export function DriverStatusboard({
             <p className="text-sm font-semibold text-foreground">{t("statusboard.title")}</p>
             <p className="text-xs text-muted-foreground mt-0.5">{t("statusboard.subtitle")}</p>
           </div>
-          <p className="text-xs text-muted-foreground font-medium">
-            {t("statusboard.weekPeriod", { range: weekLabel })}
-            {weekStart === getThisWeekStart() && (
-              <span className="ml-1.5 text-[9px] font-bold uppercase tracking-wide text-green-800 bg-green-100 dark:text-green-200 dark:bg-green-900/50 px-1.5 py-0.5 rounded align-middle">
-                {t("dashboard.weekActive")}
-              </span>
-            )}
+          <div className="flex flex-col sm:items-end gap-2">
             {totalRows > 0 && (
-              <span className="ml-2 text-foreground">· {totalRows} {t("dashboard.driver").toLowerCase()}(s)</span>
+              <p className="text-xs text-muted-foreground font-medium">
+                {totalRows} {t("dashboard.driver").toLowerCase()}(s)
+              </p>
             )}
-          </p>
+            {flatCanAdd && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  MODERN_ADD_BTN,
+                  "!h-6 !w-auto !min-h-6 px-2 gap-1 rounded-full font-medium text-[10px]",
+                )}
+                disabled={!!draftSectionKey || addingRow}
+                title={t("statusboard.addRow")}
+                onClick={() =>
+                  startDraftRow({
+                    dispatcherId: resolveFlatDispatcherId(),
+                    dispatcherName: "",
+                  })
+                }
+              >
+                <Plus className={MODERN_ADD_ICON} />
+                {t("statusboard.addRow")}
+              </Button>
+            )}
+          </div>
         </div>
 
-        {totalRows === 0 ? (
+        {!showTable ? (
           <p className="p-8 text-sm text-center text-muted-foreground">
             {driverFilterId || dispatcherFilterKey
               ? t("statusboard.noDriversForFilter")
@@ -724,28 +1000,56 @@ export function DriverStatusboard({
                   <th className={hdr}>{t("statusboard.status")}</th>
                   <th className={hdr}>{t("statusboard.prebook")}</th>
                   <th className={cn(hdr, "text-left")}>{t("statusboard.note")}</th>
+                  <th className={cn(hdr, "w-9 p-1")} aria-label={t("loads.sheet.deleteRow")}>
+                    <span className="sr-only">{t("loads.sheet.deleteRow")}</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {sections.map((section) => (
+                {displaySections.map((section) => (
                   <Fragment key={section.dispatcherId ?? `section-${section.dispatcherName}`}>
                     {groupByDispatcher && section.dispatcherName && (
                       <tr>
                         <td
                           colSpan={COL_COUNT}
                           className={cn(
-                            "px-3 py-2 text-center text-sm font-bold uppercase tracking-wide sticky top-[41px] z-10",
+                            "px-3 py-2 text-sm font-bold uppercase tracking-wide sticky top-[41px] z-10",
                             "bg-green-100 text-green-900 border border-green-200",
                             "dark:bg-green-950/55 dark:text-green-200 dark:border-green-800",
                           )}
                         >
-                          {section.dispatcherName === "Unassigned"
-                            ? t("statusboard.unassigned")
-                            : section.dispatcherName}
+                          <div className="flex items-center justify-center gap-1.5">
+                            {canEditDriverBoardRow({
+                              editorRole,
+                              editorUserId,
+                              sectionDispatcherId: section.dispatcherId,
+                              groupByDispatcher,
+                            }) &&
+                              section.dispatcherId !== null && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className={MODERN_ADD_BTN}
+                                  title={t("statusboard.addRow")}
+                                  disabled={!!draftSectionKey || addingRow}
+                                  data-testid={`statusboard-add-row-${section.dispatcherId}`}
+                                  onClick={() => startDraftRow(section)}
+                                >
+                                  <Plus className={MODERN_ADD_ICON} />
+                                </Button>
+                              )}
+                            <span>
+                              {section.dispatcherName === "Unassigned"
+                                ? t("statusboard.unassigned")
+                                : section.dispatcherName}
+                            </span>
+                          </div>
                         </td>
                       </tr>
                     )}
                     {section.drivers.map((block) => renderRow(block, section))}
+                    {draftSectionKey === sectionKey(section) && renderDraftRow(section)}
                   </Fragment>
                 ))}
               </tbody>
@@ -753,6 +1057,22 @@ export function DriverStatusboard({
           </div>
         )}
 
+      <QuickAddDriverDialog
+        open={driverAddOpen}
+        onClose={() => {
+          setDriverAddOpen(false);
+          setSwapDriverLoadId(null);
+        }}
+        onCreated={(driverId) => {
+          if (swapDriverLoadId) {
+            void swapDriverOnLoad(swapDriverLoadId, driverId);
+            setSwapDriverLoadId(null);
+          } else {
+            setDraftDriverId(driverId);
+            void confirmDraftDriver(driverId);
+          }
+        }}
+      />
     </div>
   );
 }

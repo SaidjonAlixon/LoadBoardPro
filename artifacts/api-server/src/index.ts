@@ -2,6 +2,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { backfillNicknames } from "./lib/backfill-nicknames";
 import { startScheduleReminderJob } from "./lib/schedule-reminders";
+import { startWeekLockJob } from "./lib/week-lock-job";
 
 const rawPort = process.env["PORT"];
 
@@ -30,6 +31,7 @@ app.listen(port, async (err) => {
   }
 
   startScheduleReminderJob();
+  startWeekLockJob();
 
   logger.info({ port }, "Server listening");
 });

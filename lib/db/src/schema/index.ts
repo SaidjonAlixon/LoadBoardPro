@@ -4,3 +4,4 @@ export * from "./brokers";
 export * from "./loads";
 export * from "./notifications";
 export * from "./board-weeks";
+export * from "./week-locks";

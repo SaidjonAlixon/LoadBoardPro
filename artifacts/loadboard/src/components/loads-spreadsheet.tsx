@@ -1,10 +1,27 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Broker, Driver, Load, LoadStatus, LoadUpdate, User } from "@workspace/api-client-react";
 import { useCreateLoad, useDeleteLoad, useGetKpi, updateLoad } from "@workspace/api-client-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { LoadsWeekToolbar, type BoardWeek } from "@/components/loads-week-toolbar";
+import { LoadsBulkActionBar } from "@/components/loads-bulk-action-bar";
+import { LoadsBulkMoveWeekDialog } from "@/components/loads-bulk-move-week-dialog";
+import { WeekLockControls } from "@/components/week-lock-controls";
+import { WeekLockedOverlay } from "@/components/week-locked-overlay";
+import { WeekPermissionRequestDialog } from "@/components/week-permission-request-dialog";
+import { WeekPendingRequestsButton } from "@/components/week-pending-requests-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Plus, Eye, Trash2, Columns2, GripVertical, DollarSign, Route, TrendingUp, Divide } from "lucide-react";
 import {
   ContextMenu,
@@ -29,17 +46,17 @@ import {
   filterVisibleWidths,
   getDefaultSheetWidths,
   scaleWidthsToContainer,
+  SELECT_COL_INDEX,
 } from "@/components/sheet-column-widths";
 import { resolveBrokerIdByName } from "@/lib/resolve-broker";
 import { cn } from "@/lib/utils";
-import { getMondayOfWeek, getThisWeekStart, normalizeWeekStart, toIsoDateLocal, weekEndFromStart } from "@/lib/date-range";
+import { getMondayOfWeek, getThisWeekStart, normalizeWeekStart, toIsoDateLocal, weekEndFromStart, addDays, formatWeekRangeLabel } from "@/lib/date-range";
 import {
   DISPATCHER_REQUIRED_FIELD_LABEL_KEYS,
   getActiveDraftLoadId,
   getDispatcherFieldValidation,
   getNextRequiredDraftField,
   getPrimaryPatchField,
-  mapPatchFieldToSheetField,
   isDispatcherLoadComplete,
   isDraftLoadNumber,
   isPlaceholderCity,
@@ -51,7 +68,6 @@ import {
 import { toast } from "sonner";
 
 const COL_COUNT_BASE = 17;
-const EYE_COL_INDEX = 16;
 const COL_COUNT_FINANCIAL = 4;
 const COL_COUNT = COL_COUNT_BASE + COL_COUNT_FINANCIAL;
 
@@ -80,7 +96,7 @@ type TotalsColumn =
   | "reimb"
   | "notes"
   | "status"
-  | "action"
+  | "select"
   | "invoiced"
   | "irDiff"
   | "brokerPaid"
@@ -91,10 +107,11 @@ function buildTotalsColumns(
   showFinancial: boolean,
   showActionColumn: boolean,
 ): TotalsColumn[] {
-  const cols: TotalsColumn[] = ["hash", "type", "driver", "broker", "loadNum"];
+  const cols: TotalsColumn[] = [];
+  if (showActionColumn) cols.push("select");
+  cols.push("hash", "type", "driver", "broker", "loadNum");
   if (showRouteDetails) cols.push("puDate", "origin", "delDate", "dest");
   cols.push("mileage", "rpm", "rate", "dispatcher", "reimb", "notes", "status");
-  if (showActionColumn) cols.push("action");
   if (showFinancial) cols.push("invoiced", "irDiff", "brokerPaid", "biDiff");
   return cols;
 }
@@ -113,28 +130,50 @@ const TOTAL_BASE =
 const READONLY_CELL = `${CELL} text-muted-foreground bg-sheet-readonly`;
 const ROW_NUM_CELL = `${CELL} text-muted-foreground bg-sheet-readonly font-medium tabular-nums`;
 
+function readPatchError(err: unknown): string | null {
+  if (err && typeof err === "object" && "data" in err) {
+    const data = (err as { data?: { error?: string } }).data;
+    if (data?.error) return data.error;
+  }
+  if (err instanceof Error && err.message && err.message !== "validation") {
+    return err.message;
+  }
+  return null;
+}
+
 function canEditField(
   role: string,
   field: string,
   load?: Load,
   activeDraftLoadId?: string | null,
   currentUserId?: string | null,
+  weekEditable = true,
 ): boolean {
-  if (load && activeDraftLoadId && load.id !== activeDraftLoadId) return false;
+  if (role === "dispatcher" && !weekEditable) return false;
+  if (load && activeDraftLoadId && load.id !== activeDraftLoadId) {
+    if (role !== "accounting" && role !== "admin" && role !== "dispatcher") return false;
+  }
   if (field === "dispatcherId") {
-    if (load && isLoadDispatcherLocked(load.status)) return false;
-    if (role === "admin") return true;
-    if (role === "dispatcher") {
-      return !!currentUserId && !!load && load.dispatcherId === currentUserId;
+    if (load && isLoadDispatcherLocked(load.status) && role !== "accounting" && role !== "admin") {
+      return false;
+    }
+    if (role === "admin" || role === "accounting" || role === "dispatcher") {
+      return !!currentUserId;
     }
     return false;
   }
   if (load && role === "dispatcher") {
-    if (!currentUserId || load.dispatcherId !== currentUserId) return false;
     if (isLoadDispatcherLocked(load.status)) return false;
   }
   if (["rpm", "irDiff", "biDiff", "type", "driver"].includes(field)) return false;
-  if (role === "accounting") return ACCOUNTING_FIELDS.has(field);
+  if (role === "accounting") {
+    return (
+      DISPATCHER_FIELDS.has(field)
+      || ACCOUNTING_FIELDS.has(field)
+      || field === "dispatcherId"
+      || field === "driverId"
+    );
+  }
   if (role === "dispatcher") return DISPATCHER_FIELDS.has(field);
   if (role === "admin") {
     return ACCOUNTING_FIELDS.has(field) || DISPATCHER_FIELDS.has(field) || field === "driverId" || field === "dispatcherId";
@@ -146,19 +185,38 @@ function canDeleteLoadRow(
   role: string,
   load: Load,
   currentUserId?: string | null,
+  weekEditable = true,
 ): boolean {
+  if (role === "accounting" || role === "admin") return true;
+  if (role === "dispatcher" && !weekEditable) return false;
   if (isLoadDispatcherLocked(load.status)) return false;
-  if (role === "admin") return true;
   if (role === "dispatcher") {
-    return !!currentUserId && load.dispatcherId === currentUserId;
+    return !!currentUserId;
   }
   return false;
 }
 
-function ownsLoad(role: string, load: Load, currentUserId?: string | null): boolean {
-  if (role === "admin") return true;
-  if (role === "dispatcher") return !!currentUserId && load.dispatcherId === currentUserId;
+function canDragReorderLoad(role: string, load: Load): boolean {
+  if (role === "accounting" || role === "admin") return true;
+  return !isLoadDispatcherLocked(load.status);
+}
+
+function ownsLoad(role: string, _load: Load, currentUserId?: string | null): boolean {
+  if (role === "admin" || role === "accounting") return true;
+  if (role === "dispatcher") return !!currentUserId;
   return false;
+}
+
+function canSelectLoad(
+  role: string,
+  load: Load,
+  currentUserId?: string | null,
+  activeDraftLoadId?: string | null,
+): boolean {
+  if (activeDraftLoadId && load.id !== activeDraftLoadId) {
+    if (role !== "accounting" && role !== "admin" && role !== "dispatcher") return false;
+  }
+  return ownsLoad(role, load, currentUserId);
 }
 
 function cellValidation(
@@ -343,13 +401,31 @@ function SheetToolbarStat({
   icon: Icon,
   iconWrapClass,
   labelClass,
+  compact = false,
 }: {
   label: string;
   value: string;
   icon: typeof DollarSign;
   iconWrapClass: string;
   labelClass: string;
+  compact?: boolean;
 }) {
+  if (compact) {
+    return (
+      <div
+        className="flex h-[34px] min-w-[5rem] max-w-[6.5rem] shrink-0 flex-col justify-center rounded border border-border/60 bg-card/80 px-1.5 py-0.5 shadow-sm"
+        title={`${label}: ${value}`}
+      >
+        <span className={`truncate text-[7px] font-bold uppercase leading-tight tracking-wide ${labelClass}`}>
+          {label}
+        </span>
+        <span className="truncate text-[10px] font-bold tabular-nums leading-tight text-foreground">
+          {value}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div
       className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border/70 bg-card px-2 shadow-sm"
@@ -383,6 +459,8 @@ interface LoadsSpreadsheetProps {
   filterDriverId?: string;
   dispatcherFilterId?: string;
   dispatchers?: User[];
+  toolbarLeading?: ReactNode;
+  toolbarFilterPanel?: ReactNode;
 }
 
 export function LoadsSpreadsheet({
@@ -403,6 +481,8 @@ export function LoadsSpreadsheet({
   filterDriverId,
   dispatcherFilterId,
   dispatchers = [],
+  toolbarLeading,
+  toolbarFilterPanel,
 }: LoadsSpreadsheetProps) {
   const weekStart = weekStartProp ?? getThisWeekStart();
   const kpiParams = useMemo(() => {
@@ -418,6 +498,63 @@ export function LoadsSpreadsheet({
   const { data: kpi, isLoading: kpiLoading } = useGetKpi(kpiParams);
   const { t, formatCurrency, formatNumber, formatDate } = useI18n();
   const qc = useQueryClient();
+  const monWeek = normalizeWeekStart(weekStart);
+
+  const { data: weekAccess, refetch: refetchWeekAccess } = useQuery<{
+    isLocked: boolean;
+    canEdit: boolean;
+    grantExpiresAt: string | null;
+    scheduledLockAt: string | null;
+  }>({
+    queryKey: ["/api/week-locks/access", monWeek],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/week-locks/access?weekStart=${encodeURIComponent(monWeek)}`,
+        { credentials: "include" },
+      );
+      if (!res.ok) throw new Error("Failed to load week access");
+      return res.json();
+    },
+  });
+
+  const { data: lockSettings, refetch: refetchLockSettings } = useQuery<{
+    autoLockOnWeekRollover: boolean;
+  }>({
+    queryKey: ["/api/week-locks/settings"],
+    enabled: userRole === "accounting" || userRole === "admin",
+    queryFn: async () => {
+      const res = await fetch("/api/week-locks/settings", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed");
+      return res.json();
+    },
+  });
+
+  const weekEditableForDispatcher =
+    userRole !== "dispatcher" || (weekAccess?.canEdit ?? true);
+  const showWeekLockOverlay =
+    userRole === "dispatcher" && !!weekAccess?.isLocked && !weekAccess?.canEdit;
+  const showGrantBanner =
+    userRole === "dispatcher"
+    && !!weekAccess?.isLocked
+    && !!weekAccess?.canEdit
+    && !!weekAccess?.grantExpiresAt;
+  const currentWeekLockMeta = useMemo(
+    () => boardWeeks.find((w) => normalizeWeekStart(w.weekStart) === monWeek),
+    [boardWeeks, monWeek],
+  );
+  const [requestPermissionOpen, setRequestPermissionOpen] = useState(false);
+
+  const invalidateWeekLock = useCallback(() => {
+    void refetchWeekAccess();
+    void refetchLockSettings();
+    void qc.invalidateQueries({ queryKey: ["/api/board-weeks"] });
+  }, [qc, refetchLockSettings, refetchWeekAccess]);
+
+  const weekEditable = weekEditableForDispatcher;
+  const weekDefaultMonth = useMemo(
+    () => new Date(`${monWeek}T12:00:00`),
+    [monWeek],
+  );
   const hiddenStorageKey = `lb_hidden_drivers_${weekStart}`;
 
   const readHiddenDrivers = useCallback((key: string) => {
@@ -466,8 +603,18 @@ export function LoadsSpreadsheet({
     }
     return map;
   }, [groups]);
-  const canAddLoad = userRole === "dispatcher" || userRole === "admin";
-  const canReorder = canAddLoad;
+
+  const weekLoadsAll = useMemo(() => loadsInWeek(loads, weekStart), [loads, weekStart]);
+  const fullViewFinancialTotals = useMemo(() => {
+    const totalReimb = sumField(weekLoadsAll, "reimbursement");
+    const totalInvoiced = weekLoadsAll.reduce((a, l) => a + (l.invoicedAmount ?? 0), 0);
+    const totalPaid = weekLoadsAll.reduce((a, l) => a + (l.brokerPaid ?? 0), 0);
+    return { totalReimb, totalInvoiced, totalPaid };
+  }, [weekLoadsAll]);
+
+  const canAddLoad = (userRole === "dispatcher" || userRole === "admin") && weekEditable;
+  const canReorder =
+    userRole === "accounting" || ((userRole === "dispatcher" || userRole === "admin") && weekEditable);
   const requireDispatcher = userRole === "admin" || userRole === "dispatcher";
   const [draftTouchedFields, setDraftTouchedFields] = useState<Map<string, Set<string>>>(new Map());
   const activeDraftLoadId = useMemo(
@@ -480,10 +627,20 @@ export function LoadsSpreadsheet({
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const canToggleFinancial = userRole !== "accounting";
   const canToggleRouteDetails = userRole === "accounting";
-  const showActionColumn = userRole === "dispatcher" || userRole === "admin";
+  const showActionColumn =
+    userRole === "dispatcher" || userRole === "admin" || userRole === "accounting";
+  const canBulkDelete =
+    userRole === "accounting" ||
+    ((userRole === "dispatcher" || userRole === "admin") && weekEditable);
+  const canBulkMoveWeek = userRole === "accounting";
+  const [selectedLoadIds, setSelectedLoadIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [moveWeekOpen, setMoveWeekOpen] = useState(false);
   const [showFinancial, setShowFinancial] = useState(userRole === "accounting");
   const [showRouteDetails, setShowRouteDetails] = useState(userRole !== "accounting");
   const [focusCell, setFocusCell] = useState<{ loadId: string; field: string } | null>(null);
+  const dispatcherPromptRef = useRef<string | null>(null);
   const [columnWidths, setColumnWidths] = useState<number[] | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
@@ -492,6 +649,22 @@ export function LoadsSpreadsheet({
     setShowFinancial(userRole === "accounting");
     setShowRouteDetails(userRole !== "accounting");
   }, [userRole]);
+
+  useEffect(() => {
+    setSelectedLoadIds(new Set());
+  }, [weekStart]);
+
+  useEffect(() => {
+    if (!focusCell || focusCell.field !== "dispatcherId") return;
+    const key = focusCell.loadId;
+    if (dispatcherPromptRef.current === key) return;
+    dispatcherPromptRef.current = key;
+    toast.info(t("loads.selectDispatcher"));
+  }, [focusCell, t]);
+
+  useEffect(() => {
+    if (!focusCell) dispatcherPromptRef.current = null;
+  }, [focusCell]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -539,6 +712,58 @@ export function LoadsSpreadsheet({
     showActionColumn,
   ).length;
 
+  const selectableLoadIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const group of groups) {
+      for (const load of loadsInWeek(group.loads, weekStart)) {
+        if (canSelectLoad(userRole, load, currentUserId, activeDraftLoadId)) {
+          ids.push(load.id);
+        }
+      }
+    }
+    return ids;
+  }, [groups, weekStart, userRole, currentUserId, activeDraftLoadId]);
+
+  const allLoadsSelected =
+    selectableLoadIds.length > 0 && selectableLoadIds.every((id) => selectedLoadIds.has(id));
+  const someLoadsSelected = selectableLoadIds.some((id) => selectedLoadIds.has(id));
+
+  const toggleSelectLoad = useCallback((loadId: string) => {
+    setSelectedLoadIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(loadId)) next.delete(loadId);
+      else next.add(loadId);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    if (allLoadsSelected) {
+      setSelectedLoadIds(new Set());
+      return;
+    }
+    setSelectedLoadIds(new Set(selectableLoadIds));
+  }, [allLoadsSelected, selectableLoadIds]);
+
+  const toggleSelectGroup = useCallback(
+    (groupLoads: Load[]) => {
+      const ids = groupLoads
+        .filter((l) => canSelectLoad(userRole, l, currentUserId, activeDraftLoadId))
+        .map((l) => l.id);
+      if (!ids.length) return;
+      const allInGroup = ids.every((id) => selectedLoadIds.has(id));
+      setSelectedLoadIds((prev) => {
+        const next = new Set(prev);
+        if (allInGroup) ids.forEach((id) => next.delete(id));
+        else ids.forEach((id) => next.add(id));
+        return next;
+      });
+    },
+    [userRole, currentUserId, activeDraftLoadId, selectedLoadIds],
+  );
+
+  const clearSelection = useCallback(() => setSelectedLoadIds(new Set()), []);
+
   const toggleFullView = useCallback(() => {
     if (canToggleRouteDetails) setShowRouteDetails((v) => !v);
     else setShowFinancial((v) => !v);
@@ -546,12 +771,48 @@ export function LoadsSpreadsheet({
 
   const saveChains = useRef(new Map<string, Promise<void>>());
   const invalidateTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const draftTouchedRef = useRef(draftTouchedFields);
+  draftTouchedRef.current = draftTouchedFields;
 
-  const scheduleLoadsRefresh = useCallback(() => {
+  const findLoadInCache = useCallback(
+    (loadId: string): Load | undefined => {
+      const entries = qc.getQueriesData<{ data?: Load[] }>({ queryKey: ["/api/loads"] });
+      for (const [, page] of entries) {
+        const hit = page?.data?.find((l) => l.id === loadId);
+        if (hit) return hit;
+      }
+      return loads.find((l) => l.id === loadId);
+    },
+    [qc, loads],
+  );
+
+  const applyOptimisticLoadPatch = useCallback(
+    (loadId: string, data: LoadUpdate) => {
+      qc.setQueriesData<{ data: Load[] }>({ queryKey: ["/api/loads"] }, (old) => {
+        if (!old?.data) return old;
+        return {
+          ...old,
+          data: old.data.map((l) => {
+            if (l.id !== loadId) return l;
+            const next: Load = { ...l, ...data };
+            if (data.dispatcherId) {
+              const d = dispatchers.find((x) => x.id === data.dispatcherId);
+              if (d) next.dispatcher = d;
+            }
+            return next;
+          }),
+        };
+      });
+    },
+    [qc, dispatchers],
+  );
+
+  const scheduleKpiRefresh = useCallback(() => {
     clearTimeout(invalidateTimer.current);
     invalidateTimer.current = setTimeout(() => {
       void qc.invalidateQueries({ queryKey: ["/api/loads"] });
-    }, 400);
+      void qc.invalidateQueries({ queryKey: ["/api/analytics"] });
+    }, 1500);
   }, [qc]);
 
   useEffect(
@@ -581,13 +842,13 @@ export function LoadsSpreadsheet({
 
   const patchLoad = useCallback(
     async (id: string, data: LoadUpdate) => {
-      const load = loads.find((l) => l.id === id);
+      const load = findLoadInCache(id);
       if (!load) return;
       if (!ownsLoad(userRole, load, currentUserId)) return;
 
       const field = getPrimaryPatchField(data);
+      const touched = draftTouchedRef.current.get(id);
       const merged = { ...load, ...data } as Load;
-      const touched = draftTouchedFields.get(id);
 
       if (field && shouldValidateDispatcherPatch(userRole, data)) {
         const incomplete = !isDispatcherLoadComplete(load, touched, { requireDispatcher });
@@ -606,48 +867,37 @@ export function LoadsSpreadsheet({
         }
       }
 
-      const run = async () => {
-        await updateLoad(id, data);
-        if (field) {
-          setDraftTouchedFields((prev) => markDraftFieldTouched(prev, id, field));
-        }
-        scheduleLoadsRefresh();
-
-        if (id === activeDraftLoadId) {
-          const touchedAfter = field
-            ? markDraftFieldTouched(draftTouchedFields, id, field).get(id)
-            : touched;
-          const afterField = field ? mapPatchFieldToSheetField(field) : null;
-          const next = getNextRequiredDraftField(merged, {
-            showRouteDetails,
-            touched: touchedAfter,
-            afterField,
-            requireDispatcher,
-          });
-          setFocusCell(next ? { loadId: id, field: next } : null);
-        } else {
-          setFocusCell(null);
-        }
-      };
+      applyOptimisticLoadPatch(id, data);
+      if (field) {
+        const nextTouched = markDraftFieldTouched(draftTouchedRef.current, id, field);
+        draftTouchedRef.current = nextTouched;
+        setDraftTouchedFields(nextTouched);
+      }
 
       const prev = saveChains.current.get(id) ?? Promise.resolve();
       const next = prev
-        .then(run)
+        .then(() => updateLoad(id, data))
+        .then(() => {
+          scheduleKpiRefresh();
+        })
         .catch((err) => {
-          if (err?.message !== "validation") {
-            toast.error(t("loads.sheet.saveFailed"));
-          }
-          throw err;
+          void qc.invalidateQueries({ queryKey: ["/api/loads"] });
+          const apiMsg = readPatchError(err);
+          toast.error(apiMsg || t("loads.sheet.saveFailed"));
         });
 
-      saveChains.current.set(
-        id,
-        next.catch(() => undefined),
-      );
-
-      await next;
+      saveChains.current.set(id, next);
     },
-    [activeDraftLoadId, draftTouchedFields, loads, scheduleLoadsRefresh, showRouteDetails, t, userRole, currentUserId, requireDispatcher],
+    [
+      findLoadInCache,
+      applyOptimisticLoadPatch,
+      scheduleKpiRefresh,
+      qc,
+      t,
+      userRole,
+      currentUserId,
+      requireDispatcher,
+    ],
   );
 
   const draftCellNav = useCallback(
@@ -757,18 +1007,75 @@ export function LoadsSpreadsheet({
     [qc, t, weekStart, persistHiddenDrivers],
   );
 
-  const deleteLoad = useCallback(
-    async (load: Load) => {
-      const label = isNewLoad(load) ? t("loads.sheet.newLoad") : load.loadNumber;
-      if (!window.confirm(t("loads.sheet.deleteRowConfirm", { loadNumber: label }))) return;
+  const bulkDeleteIds = useMemo(
+    () =>
+      [...selectedLoadIds].filter((id) => {
+        const load = loads.find((l) => l.id === id);
+        return load && canDeleteLoadRow(userRole, load, currentUserId, weekEditable);
+      }),
+    [selectedLoadIds, loads, userRole, currentUserId, weekEditable],
+  );
+
+  const requestBulkDelete = useCallback(() => {
+    if (!bulkDeleteIds.length) return;
+    setBulkDeleteOpen(true);
+  }, [bulkDeleteIds.length]);
+
+  const confirmBulkDeleteSelected = useCallback(async () => {
+    if (!bulkDeleteIds.length) return;
+    setBulkDeleteOpen(false);
+    setBulkBusy(true);
+    try {
+      for (const id of bulkDeleteIds) {
+        await deleteMutation.mutateAsync({ id });
+      }
+      setSelectedLoadIds(new Set());
+      toast.success(t("loads.sheet.bulkDeleteSuccess"));
+    } catch {
+      toast.error(t("loads.sheet.bulkDeleteFailed"));
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [bulkDeleteIds, deleteMutation, t]);
+
+  const bulkMoveToWeek = useCallback(
+    async (targetWeekStart: string) => {
+      const targetMonday = normalizeWeekStart(targetWeekStart);
+      const movableIds = [...selectedLoadIds].filter((id) => {
+        const load = loads.find((l) => l.id === id);
+        return load && userRole === "accounting";
+      });
+      if (!movableIds.length) return;
+
+      setBulkBusy(true);
       try {
-        await deleteMutation.mutateAsync({ id: load.id });
-        toast.success(t("loads.sheet.deleteRowSuccess"));
-      } catch {
-        toast.error(t("loads.sheet.deleteRowFailed"));
+        const res = await fetch("/api/loads/bulk-move-week", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            loadIds: movableIds,
+            targetWeekStart: targetMonday,
+          }),
+        });
+        const body = (await res.json().catch(() => ({}))) as { error?: string; moved?: number };
+        if (!res.ok) {
+          throw new Error(body.error || "bulk move failed");
+        }
+        void qc.invalidateQueries({ queryKey: ["/api/loads"] });
+        void qc.invalidateQueries({ queryKey: ["/api/analytics"] });
+        void qc.invalidateQueries({ queryKey: ["/api/board-weeks"] });
+        setSelectedLoadIds(new Set());
+        setMoveWeekOpen(false);
+        toast.success(t("loads.sheet.bulkMoveSuccess"));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "";
+        toast.error(msg || t("loads.sheet.bulkMoveFailed"));
+      } finally {
+        setBulkBusy(false);
       }
     },
-    [deleteMutation, t],
+    [selectedLoadIds, loads, userRole, qc, t],
   );
 
   const handleResizeStart = useCallback(
@@ -823,15 +1130,17 @@ export function LoadsSpreadsheet({
       } catch (err) {
         const message = err instanceof Error ? err.message : "";
         const friendlyMessage =
-          message === "Forbidden" || message.includes("other dispatchers")
+          message.includes("other dispatchers")
             ? t("loads.sheet.reorderForbidden")
-            : message && message !== "reorder failed"
-              ? message
-              : t("loads.sheet.reorderFailed");
+            : message === "Forbidden" && userRole === "dispatcher"
+              ? t("loads.sheet.reorderForbidden")
+              : message && message !== "reorder failed"
+                ? message
+                : t("loads.sheet.reorderFailed");
         toast.error(friendlyMessage);
       }
     },
-    [qc, t],
+    [qc, t, userRole],
   );
 
   const handleRowDrop = useCallback(
@@ -866,7 +1175,7 @@ export function LoadsSpreadsheet({
       title={typeof label === "string" ? label : undefined}
     >
       {label}
-      {colIndex !== EYE_COL_INDEX && (
+      {colIndex !== SELECT_COL_INDEX && (
         <div
           role="separator"
           aria-orientation="vertical"
@@ -890,12 +1199,8 @@ export function LoadsSpreadsheet({
   }, [t]);
 
   const dispatcherOptions = useMemo(() => {
-    const opts = dispatchers.map((d) => ({ value: d.id, label: dispatcherDisplayName(d) }));
-    if (requireDispatcher) {
-      return [{ value: "", label: t("loads.selectDispatcher") }, ...opts];
-    }
-    return opts;
-  }, [dispatchers, dispatcherDisplayName, requireDispatcher, t]);
+    return dispatchers.map((d) => ({ value: d.id, label: dispatcherDisplayName(d) }));
+  }, [dispatchers, dispatcherDisplayName]);
 
   const dispatcherLabel = useCallback(
     (dispatcherId?: string | null) => {
@@ -917,18 +1222,29 @@ export function LoadsSpreadsheet({
     [brokers, patchLoad, qc],
   );
 
-  const eyeHeader = showActionColumn ? (
-    <th
-      key="eye"
-      className={`${hdrCls} text-center max-w-none overflow-visible ${!showFinancial ? "border-r-0" : ""}`}
-    />
+  const selectHeader = showActionColumn ? (
+    renderHeaderCell(
+      SELECT_COL_INDEX,
+      <div className="flex items-center justify-center">
+        <Checkbox
+          checked={allLoadsSelected ? true : someLoadsSelected ? "indeterminate" : false}
+          onCheckedChange={toggleSelectAll}
+          disabled={!selectableLoadIds.length || !!activeDraftLoadId}
+          title={t("loads.sheet.selectAllLoads")}
+          aria-label={t("loads.sheet.selectAllLoads")}
+          className="border-sheet-hdr-border bg-sheet-hdr data-[state=checked]:bg-primary data-[state=checked]:border-primary"
+          onClick={(e) => e.stopPropagation()}
+        />
+      </div>,
+      "",
+    )
   ) : null;
 
   const renderFinancialCells = (load: Load) => {
     if (!showFinancial) return null;
     return (
       <>
-        {canEditField(userRole, "invoicedAmount", load, activeDraftLoadId, currentUserId) ? (
+        {canEditField(userRole, "invoicedAmount", load, activeDraftLoadId, currentUserId, weekEditable) ? (
           <SheetEditableCell
             editable
             value={String(load.invoicedAmount ?? "")}
@@ -954,7 +1270,7 @@ export function LoadsSpreadsheet({
           formatCurrency={formatCurrency}
           highlightNegative
         />
-        {canEditField(userRole, "brokerPaid", load, activeDraftLoadId, currentUserId) ? (
+        {canEditField(userRole, "brokerPaid", load, activeDraftLoadId, currentUserId, weekEditable) ? (
           <SheetEditableCell
             editable
             value={String(load.brokerPaid ?? "")}
@@ -1074,11 +1390,13 @@ export function LoadsSpreadsheet({
                   {hasFinancialTotals ? formatCurrency(totalBi) : t("common.emDash")}
                 </td>
               );
-            case "action":
+            case "select":
+              return <td key={col} className={totalCellCls} />;
+            case "status":
               return (
                 <td
                   key={col}
-                  className={`${totalCellCls} ${!showFinancial && isLast ? "border-r-0" : ""}`}
+                  className={`${totalCellCls} ${!showFinancial ? "border-r-0" : ""}`}
                 />
               );
             default:
@@ -1095,107 +1413,184 @@ export function LoadsSpreadsheet({
   };
 
   return (
-    <div className="flex flex-col min-h-0 h-full">
-      <div className="flex items-center gap-2 px-2 py-1.5 border-b border-border/60 bg-muted/25 backdrop-blur-sm shrink-0">
-        <div className="flex shrink-0 items-center gap-2 min-w-0">
-        {onWeekChange && onCreateWeek ? (
-          <LoadsWeekToolbar
-            weekStart={weekStart}
-            weeks={boardWeeks}
-            onWeekChange={onWeekChange}
-            onCreateWeek={onCreateWeek}
-            creatingWeek={creatingWeek}
-            formatDate={formatDate}
-            t={t}
-            canManageWeeks={userRole === "admin" || userRole === "dispatcher"}
-          />
-        ) : (
-          <div />
-        )}
-        </div>
+    <div className="relative flex flex-col min-h-0 h-full">
+      <div className="flex shrink-0 flex-col border-b border-border/60 bg-muted/25 backdrop-blur-sm">
+        <div className="flex min-h-[38px] items-center gap-1.5 px-2 py-1">
+          <div className="flex min-w-0 shrink-0 items-center gap-1.5">
+            {toolbarLeading}
+            {toolbarLeading && (onWeekChange || userRole === "accounting" || userRole === "admin") ? (
+              <div className="hidden h-5 w-px shrink-0 bg-border/70 sm:block" aria-hidden />
+            ) : null}
+            {onWeekChange && onCreateWeek ? (
+              <LoadsWeekToolbar
+                weekStart={weekStart}
+                weeks={boardWeeks}
+                onWeekChange={onWeekChange}
+                onCreateWeek={onCreateWeek}
+                creatingWeek={creatingWeek}
+                formatDate={formatDate}
+                t={t}
+                canManageWeeks={userRole === "admin" || userRole === "dispatcher"}
+              />
+            ) : null}
+            {(userRole === "accounting" || userRole === "admin") && (
+              <WeekLockControls
+                weekStart={monWeek}
+                isLocked={currentWeekLockMeta?.isLocked ?? weekAccess?.isLocked ?? false}
+                scheduledLockAt={
+                  currentWeekLockMeta?.scheduledLockAt ?? weekAccess?.scheduledLockAt ?? null
+                }
+                autoLockOnWeekRollover={lockSettings?.autoLockOnWeekRollover ?? true}
+                dispatchers={dispatchers}
+                t={t}
+                onChanged={invalidateWeekLock}
+              />
+            )}
+            {(userRole === "accounting" || userRole === "admin") && (
+              <WeekPendingRequestsButton t={t} />
+            )}
+          </div>
 
-        <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5 overflow-hidden">
-          {isLoading || kpiLoading ? (
-            <Skeleton className="h-8 w-48 shrink-0 rounded-md" />
-          ) : (kpi?.totalLoads ?? 0) > 0 ? (
-            <>
-              <SheetToolbarStat
-                label={t("dashboard.totalGross")}
-                value={formatCurrency(kpi?.totalGross ?? 0)}
-                icon={DollarSign}
-                iconWrapClass="bg-sky-100 text-sky-600 dark:bg-sky-500/20 dark:text-sky-300"
-                labelClass="text-sky-700 dark:text-sky-300"
-              />
-              <SheetToolbarStat
-                label={t("dashboard.totalMiles")}
-                value={formatNumber(kpi?.totalMiles ?? 0)}
-                icon={Route}
-                iconWrapClass="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-300"
-                labelClass="text-violet-700 dark:text-violet-300"
-              />
-              <SheetToolbarStat
-                label={t("dashboard.avgRpm")}
-                value={formatCurrency(kpi?.avgRpm ?? 0)}
-                icon={TrendingUp}
-                iconWrapClass="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300"
-                labelClass="text-emerald-700 dark:text-emerald-300"
-              />
-              <SheetToolbarStat
-                label={t("dashboard.grossPerDriver")}
-                value={formatCurrency(kpi?.grossPerDriver ?? 0)}
-                icon={Divide}
-                iconWrapClass="bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300"
-                labelClass="text-amber-800 dark:text-amber-300"
-              />
-            </>
-          ) : null}
-        <div className="flex shrink-0 items-center gap-2">
-        {(canToggleRouteDetails || canToggleFinancial) && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className={`h-8 text-xs gap-1.5 ${
-              isFullView
-                ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
-                : "border-border text-muted-foreground"
-            }`}
-            onClick={toggleFullView}
-            title={
-              isFullView
-                ? canToggleRouteDetails
-                  ? t("loads.sheet.hideRouteDetails")
-                  : t("loads.sheet.hideFinancial")
-                : canToggleRouteDetails
-                  ? t("loads.sheet.showRouteDetails")
-                  : t("loads.sheet.showFinancial")
-            }
-            data-testid="sheet-full-view"
-          >
-            <Eye className="h-3.5 w-3.5" />
-            {t("loads.sheet.fullView")}
-          </Button>
-        )}
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-8 text-xs border-border"
-          onClick={handleAutoFit}
-          data-testid="sheet-auto-fit"
-        >
-          <Columns2 className="h-3.5 w-3.5 mr-1.5" />
-          {t("loads.sheet.autoFit")}
-        </Button>
+          <div className="flex min-w-0 flex-1 items-center justify-end gap-1 overflow-hidden">
+            {isLoading || kpiLoading ? (
+              <Skeleton className="h-[34px] w-48 shrink-0 rounded-md" />
+            ) : (kpi?.totalLoads ?? 0) > 0 ? (
+              <div className="flex min-w-0 flex-nowrap items-center gap-1 overflow-x-auto scrollbar-none">
+                <SheetToolbarStat
+                  compact={isFullView}
+                  label={t("dashboard.totalGross")}
+                  value={formatCurrency(kpi?.totalGross ?? 0)}
+                  icon={DollarSign}
+                  iconWrapClass="bg-sky-100 text-sky-600 dark:bg-sky-500/20 dark:text-sky-300"
+                  labelClass="text-sky-700 dark:text-sky-300"
+                />
+                <SheetToolbarStat
+                  compact={isFullView}
+                  label={t("dashboard.totalMiles")}
+                  value={formatNumber(kpi?.totalMiles ?? 0)}
+                  icon={Route}
+                  iconWrapClass="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-300"
+                  labelClass="text-violet-700 dark:text-violet-300"
+                />
+                <SheetToolbarStat
+                  compact={isFullView}
+                  label={t("dashboard.avgRpm")}
+                  value={formatCurrency(kpi?.avgRpm ?? 0)}
+                  icon={TrendingUp}
+                  iconWrapClass="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300"
+                  labelClass="text-emerald-700 dark:text-emerald-300"
+                />
+                <SheetToolbarStat
+                  compact={isFullView}
+                  label={t("dashboard.grossPerDriver")}
+                  value={formatCurrency(kpi?.grossPerDriver ?? 0)}
+                  icon={Divide}
+                  iconWrapClass="bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300"
+                  labelClass="text-amber-800 dark:text-amber-300"
+                />
+                {isFullView && weekLoadsAll.length > 0 && (
+                  <>
+                    <SheetToolbarStat
+                      compact
+                      label={t("loads.sheet.reimbursement")}
+                      value={
+                        fullViewFinancialTotals.totalReimb
+                          ? formatCurrency(fullViewFinancialTotals.totalReimb)
+                          : t("common.emDash")
+                      }
+                      icon={DollarSign}
+                      iconWrapClass="bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300"
+                      labelClass="text-orange-800 dark:text-orange-300"
+                    />
+                    {showFinancial && (
+                      <>
+                        <SheetToolbarStat
+                          compact
+                          label={t("loads.sheet.invoicedAmount")}
+                          value={formatCurrency(fullViewFinancialTotals.totalInvoiced)}
+                          icon={DollarSign}
+                          iconWrapClass="bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300"
+                          labelClass="text-cyan-800 dark:text-cyan-300"
+                        />
+                        <SheetToolbarStat
+                          compact
+                          label={t("loads.sheet.brokerPaid")}
+                          value={formatCurrency(fullViewFinancialTotals.totalPaid)}
+                          icon={DollarSign}
+                          iconWrapClass="bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300"
+                          labelClass="text-indigo-800 dark:text-indigo-300"
+                        />
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+            ) : null}
+            <div className="flex shrink-0 items-center gap-1 pl-0.5">
+              {(canToggleRouteDetails || canToggleFinancial) && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className={`h-7 px-2 text-[11px] gap-1 ${
+                    isFullView
+                      ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
+                      : "border-border text-muted-foreground"
+                  }`}
+                  onClick={toggleFullView}
+                  title={
+                    isFullView
+                      ? canToggleRouteDetails
+                        ? t("loads.sheet.hideRouteDetails")
+                        : t("loads.sheet.hideFinancial")
+                      : canToggleRouteDetails
+                        ? t("loads.sheet.showRouteDetails")
+                        : t("loads.sheet.showFinancial")
+                  }
+                  data-testid="sheet-full-view"
+                >
+                  <Eye className="h-3 w-3" />
+                  <span className="hidden xl:inline">{t("loads.sheet.fullView")}</span>
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-[11px] border-border"
+                onClick={handleAutoFit}
+                data-testid="sheet-auto-fit"
+                title={t("loads.sheet.autoFit")}
+              >
+                <Columns2 className="h-3 w-3" />
+                <span className="hidden xl:inline ml-1">{t("loads.sheet.autoFit")}</span>
+              </Button>
+            </div>
+          </div>
         </div>
-        </div>
+        {toolbarFilterPanel ? (
+          <div className="border-t border-border/50 px-2 py-1.5">{toolbarFilterPanel}</div>
+        ) : null}
       </div>
+      {showGrantBanner && weekAccess?.grantExpiresAt && (
+        <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200">
+          {t("weekLock.grantActiveUntil", {
+            time: new Date(weekAccess.grantExpiresAt).toLocaleString(),
+          })}
+        </div>
+      )}
       <div
         ref={containerRef}
-        className={`loads-sheet-scroll flex-1 min-h-0 w-full rounded-t-lg ${
+        className={`loads-sheet-scroll relative flex-1 min-h-0 w-full rounded-t-lg ${
           columnWidths === null ? "overflow-y-auto overflow-x-hidden" : "overflow-auto"
-        }`}
+        } ${showActionColumn && selectedLoadIds.size > 0 ? "pb-12" : ""}`}
       >
+      {showWeekLockOverlay && (
+        <WeekLockedOverlay
+          t={t}
+          onRequestPermission={() => setRequestPermissionOpen(true)}
+        />
+      )}
       <table
         className="loads-sheet-table w-full table-fixed border-separate border-spacing-0 text-sm border border-sheet-hdr/80"
         style={{ minWidth: tableMinWidth }}
@@ -1207,27 +1602,27 @@ export function LoadsSpreadsheet({
         </colgroup>
         <thead>
           <tr>
-            {renderHeaderCell(0, t("loads.sheet.rowNumber"))}
-            {renderHeaderCell(1, t("loads.sheet.type"))}
-            {renderHeaderCell(2, t("loads.sheet.driverName"))}
-            {renderHeaderCell(3, t("loads.sheet.brokerName"))}
-            {renderHeaderCell(4, t("loads.sheet.loadNumber"))}
+            {selectHeader}
+            {renderHeaderCell(1, t("loads.sheet.rowNumber"))}
+            {renderHeaderCell(2, t("loads.sheet.type"))}
+            {renderHeaderCell(3, t("loads.sheet.driverName"))}
+            {renderHeaderCell(4, t("loads.sheet.brokerName"))}
+            {renderHeaderCell(5, t("loads.sheet.loadNumber"))}
             {showRouteDetails && (
               <>
-                {renderHeaderCell(5, t("loads.sheet.puDate"))}
-                {renderHeaderCell(6, t("loads.sheet.origin"))}
-                {renderHeaderCell(7, t("loads.sheet.delDate"))}
-                {renderHeaderCell(8, t("loads.sheet.destination"))}
+                {renderHeaderCell(6, t("loads.sheet.puDate"))}
+                {renderHeaderCell(7, t("loads.sheet.origin"))}
+                {renderHeaderCell(8, t("loads.sheet.delDate"))}
+                {renderHeaderCell(9, t("loads.sheet.destination"))}
               </>
             )}
-            {renderHeaderCell(9, t("loads.sheet.mileage"))}
-            {renderHeaderCell(10, t("loads.sheet.rpm"))}
-            {renderHeaderCell(11, t("loads.sheet.rate"))}
-            {renderHeaderCell(12, t("loads.sheet.dispatcher"))}
-            {renderHeaderCell(13, t("loads.sheet.reimbursement"))}
-            {renderHeaderCell(14, t("loads.sheet.dispatchNotes"))}
-            {renderHeaderCell(15, t("loads.sheet.status"))}
-            {eyeHeader}
+            {renderHeaderCell(10, t("loads.sheet.mileage"))}
+            {renderHeaderCell(11, t("loads.sheet.rpm"))}
+            {renderHeaderCell(12, t("loads.sheet.rate"))}
+            {renderHeaderCell(13, t("loads.sheet.dispatcher"))}
+            {renderHeaderCell(14, t("loads.sheet.reimbursement"))}
+            {renderHeaderCell(15, t("loads.sheet.dispatchNotes"))}
+            {renderHeaderCell(16, t("loads.sheet.status"), !showFinancial ? "border-r-0" : "")}
             {showFinancial && (
               <>
                 {renderHeaderCell(17, t("loads.sheet.invoicedAmount"))}
@@ -1284,11 +1679,15 @@ export function LoadsSpreadsheet({
             const hasFinancialTotals = weekLoads.some(
               (l) => l.invoicedAmount != null || l.brokerPaid != null,
             );
-            const ownWeekLoads = weekLoads.filter((l) => ownsLoad(userRole, l, currentUserId));
-            const canManageDriverGroup =
-              userRole === "admin"
-              || weekLoads.length === 0
-              || ownWeekLoads.length > 0;
+            const canManageDriverGroup = userRole === "admin" || userRole === "dispatcher";
+
+            const groupSelectableIds = weekLoads
+              .filter((l) => canSelectLoad(userRole, l, currentUserId, activeDraftLoadId))
+              .map((l) => l.id);
+            const allGroupSelected =
+              groupSelectableIds.length > 0
+              && groupSelectableIds.every((id) => selectedLoadIds.has(id));
+            const someGroupSelected = groupSelectableIds.some((id) => selectedLoadIds.has(id));
 
             const driverCell = (
               <>
@@ -1308,6 +1707,17 @@ export function LoadsSpreadsheet({
                       disabled={!group.driverId || !canManageDriverGroup || !!activeDraftLoadId}
                     >
                       <div className="flex items-center justify-center gap-1 min-w-0 min-h-[22px] cursor-context-menu">
+                        {showActionColumn && groupSelectableIds.length > 0 && (
+                          <Checkbox
+                            checked={allGroupSelected ? true : someGroupSelected ? "indeterminate" : false}
+                            onCheckedChange={() => toggleSelectGroup(weekLoads)}
+                            disabled={!!activeDraftLoadId}
+                            title={t("loads.sheet.selectGroupLoads")}
+                            aria-label={t("loads.sheet.selectGroupLoads")}
+                            className="shrink-0 border-border/70"
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                        )}
                         <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-center">
                           {group.driver?.fullName ?? t("loads.sheet.unassigned")}
                         </span>
@@ -1346,7 +1756,7 @@ export function LoadsSpreadsheet({
                             void deleteDriverWeek(
                               group.driverId!,
                               group.driver?.fullName ?? t("loads.sheet.unassigned"),
-                              userRole === "admin" ? weekLoads : ownWeekLoads,
+                              weekLoads,
                             )
                           }
                         >
@@ -1364,10 +1774,11 @@ export function LoadsSpreadsheet({
               <Fragment key={group.driverId ?? `unassigned-${gi}`}>
                 {rowCount === 0 ? (
                   <tr>
+                    {showActionColumn && <td className={cellCls} />}
                     <td className={ROW_NUM_CELL} />
                     {driverCell}
                     <td
-                      colSpan={visibleColCount - 3}
+                      colSpan={visibleColCount - (showActionColumn ? 4 : 3)}
                       className={`${cellCls} text-center text-muted-foreground italic ${!showFinancial ? "border-r-0" : ""}`}
                     >
                       {t("loads.sheet.clickPlus")}
@@ -1378,6 +1789,7 @@ export function LoadsSpreadsheet({
                     const touched = draftTouchedFields.get(load.id);
                     const isDraftRow = load.id === activeDraftLoadId;
                     const isLockedRow = !!activeDraftLoadId && !isDraftRow;
+                    const isSelected = selectedLoadIds.has(load.id);
                     return (
                     <tr
                       key={load.id}
@@ -1387,7 +1799,9 @@ export function LoadsSpreadsheet({
                         isDraftRow ? "ring-2 ring-inset ring-accent/40" : ""
                       } ${
                         dropTargetId === load.id ? "ring-2 ring-inset ring-accent/60" : ""
-                      } ${draggingLoadId === load.id ? "opacity-50" : ""}`}
+                      } ${draggingLoadId === load.id ? "opacity-50" : ""} ${
+                        isSelected ? "bg-primary/10 dark:bg-primary/20" : ""
+                      }`}
                       data-testid={`row-load-${load.id}`}
                       onDragOver={(e) => {
                         if (!canReorderRows || draggingLoadId === null) return;
@@ -1403,9 +1817,23 @@ export function LoadsSpreadsheet({
                         handleRowDrop(load.id, group.driverId, weekLoads);
                       }}
                     >
+                      {showActionColumn && (
+                        <td className={`${cellCls} text-center max-w-none overflow-visible`}>
+                          {canSelectLoad(userRole, load, currentUserId, activeDraftLoadId) ? (
+                            <Checkbox
+                              checked={isSelected}
+                              onCheckedChange={() => toggleSelectLoad(load.id)}
+                              title={t("loads.sheet.selectAllLoads")}
+                              aria-label={load.loadNumber || t("loads.sheet.newLoad")}
+                              className="mx-auto border-border/70"
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                          ) : null}
+                        </td>
+                      )}
                       <td className={ROW_NUM_CELL}>
                         <div className="flex items-center justify-center gap-0.5">
-                          {canReorderRows && ownsLoad(userRole, load, currentUserId) && !isLoadDispatcherLocked(load.status) && (
+                          {canReorderRows && ownsLoad(userRole, load, currentUserId) && canDragReorderLoad(userRole, load) && (
                             <span
                               draggable
                               title={t("loads.sheet.dragRow")}
@@ -1430,7 +1858,7 @@ export function LoadsSpreadsheet({
                       </td>
                       {li === 0 && driverCell}
                       <SheetEditableCell
-                        editable={canEditField(userRole, "brokerId", load, activeDraftLoadId, currentUserId)}
+                        editable={canEditField(userRole, "brokerId", load, activeDraftLoadId, currentUserId, weekEditable)}
                         value={load.broker?.name ?? ""}
                         display={load.broker?.name ?? t("common.emDash")}
                         tooltip={load.broker?.name ?? undefined}
@@ -1439,7 +1867,7 @@ export function LoadsSpreadsheet({
                         onSave={async (v) => saveBrokerForLoad(load.id, v)}
                       />
                       <SheetEditableCell
-                        editable={canEditField(userRole, "loadNumber", load, activeDraftLoadId, currentUserId)}
+                        editable={canEditField(userRole, "loadNumber", load, activeDraftLoadId, currentUserId, weekEditable)}
                         value={isDraftLoadNumber(load.loadNumber) ? "" : load.loadNumber}
                         tooltip={isDraftLoadNumber(load.loadNumber) ? undefined : load.loadNumber}
                         display={
@@ -1462,16 +1890,29 @@ export function LoadsSpreadsheet({
                       {showRouteDetails && (
                         <>
                           <SheetEditableCell
-                            editable={canEditField(userRole, "puDate", load, activeDraftLoadId, currentUserId)}
-                            value={load.puDate.split("T")[0]}
-                            display={formatSheetDate(load.puDate)}
+                            editable={canEditField(userRole, "puDate", load, activeDraftLoadId, currentUserId, weekEditable)}
+                            value={
+                              isNewLoad(load) && !touched?.has("puDate")
+                                ? ""
+                                : load.puDate.split("T")[0]
+                            }
+                            display={
+                              isNewLoad(load) && !touched?.has("puDate")
+                                ? t("loads.pickDate")
+                                : formatSheetDate(load.puDate)
+                            }
                             inputType="date"
+                            datePlaceholder={t("loads.pickDate")}
+                            dateDefaultMonth={weekDefaultMonth}
                             validationState={cellValidation(load, "puDate", activeDraftLoadId, touched)}
                             {...draftCellNav(load, "puDate")}
-                            onSave={async (v) => patchLoad(load.id, { puDate: v })}
+                            onSave={async (v) => {
+                              if (!v) throw new Error("validation");
+                              await patchLoad(load.id, { puDate: v });
+                            }}
                           />
                           <SheetEditableCell
-                            editable={canEditField(userRole, "originCity", load, activeDraftLoadId, currentUserId)}
+                            editable={canEditField(userRole, "originCity", load, activeDraftLoadId, currentUserId, weekEditable)}
                             value={formatLocationForEdit(load.originCity, load.originState)}
                             tooltip={
                               isPlaceholderCity(load.originCity)
@@ -1498,16 +1939,29 @@ export function LoadsSpreadsheet({
                             }}
                           />
                           <SheetEditableCell
-                            editable={canEditField(userRole, "delDate", load, activeDraftLoadId, currentUserId)}
-                            value={load.delDate.split("T")[0]}
-                            display={formatSheetDate(load.delDate)}
+                            editable={canEditField(userRole, "delDate", load, activeDraftLoadId, currentUserId, weekEditable)}
+                            value={
+                              isNewLoad(load) && !touched?.has("delDate")
+                                ? ""
+                                : load.delDate.split("T")[0]
+                            }
+                            display={
+                              isNewLoad(load) && !touched?.has("delDate")
+                                ? t("loads.pickDate")
+                                : formatSheetDate(load.delDate)
+                            }
                             inputType="date"
+                            datePlaceholder={t("loads.pickDate")}
+                            dateDefaultMonth={weekDefaultMonth}
                             validationState={cellValidation(load, "delDate", activeDraftLoadId, touched)}
                             {...draftCellNav(load, "delDate")}
-                            onSave={async (v) => patchLoad(load.id, { delDate: v })}
+                            onSave={async (v) => {
+                              if (!v) throw new Error("validation");
+                              await patchLoad(load.id, { delDate: v });
+                            }}
                           />
                           <SheetEditableCell
-                            editable={canEditField(userRole, "destCity", load, activeDraftLoadId, currentUserId)}
+                            editable={canEditField(userRole, "destCity", load, activeDraftLoadId, currentUserId, weekEditable)}
                             value={formatLocationForEdit(load.destCity, load.destState)}
                             tooltip={
                               isPlaceholderCity(load.destCity)
@@ -1536,7 +1990,7 @@ export function LoadsSpreadsheet({
                         </>
                       )}
                       <SheetEditableCell
-                        editable={canEditField(userRole, "mileage", load, activeDraftLoadId, currentUserId)}
+                        editable={canEditField(userRole, "mileage", load, activeDraftLoadId, currentUserId, weekEditable)}
                         value={
                           isNewLoad(load) && load.mileage === 0 ? "" : String(load.mileage ?? 0)
                         }
@@ -1574,7 +2028,7 @@ export function LoadsSpreadsheet({
                         </SheetCellText>
                       </td>
                       <SheetEditableCell
-                        editable={canEditField(userRole, "rate", load, activeDraftLoadId, currentUserId)}
+                        editable={canEditField(userRole, "rate", load, activeDraftLoadId, currentUserId, weekEditable)}
                         value={isNewLoad(load) && load.rate === 0 ? "" : String(load.rate ?? 0)}
                         display={
                           isNewLoad(load) && load.rate === 0 ? (
@@ -1603,22 +2057,45 @@ export function LoadsSpreadsheet({
                       />
                       <SheetEditableCell
                         editable={
-                          canEditField(userRole, "dispatcherId", load, activeDraftLoadId, currentUserId)
-                          && dispatcherOptions.length > (requireDispatcher ? 1 : 0)
+                          canEditField(userRole, "dispatcherId", load, activeDraftLoadId, currentUserId, weekEditable)
+                          && dispatcherOptions.length > 0
                         }
-                        value={load.dispatcherId ?? ""}
+                        value={
+                          isNewLoad(load) && !touched?.has("dispatcherId")
+                            ? ""
+                            : (load.dispatcherId ?? "")
+                        }
                         display={
                           <span
                             className={cn(
-                              "font-semibold uppercase tracking-wide text-[11px]",
-                              requireDispatcher && !load.dispatcherId && "text-muted-foreground normal-case",
+                              "text-[11px]",
+                              isNewLoad(load) && !touched?.has("dispatcherId")
+                                ? "text-muted-foreground italic"
+                                : "font-semibold uppercase tracking-wide",
                             )}
                           >
-                            {dispatcherLabel(load.dispatcherId)}
+                            {isNewLoad(load) && !touched?.has("dispatcherId")
+                              ? t("loads.selectDispatcher")
+                              : load.dispatcherId
+                                ? dispatcherLabel(load.dispatcherId)
+                                : t("loads.selectDispatcher")}
                           </span>
                         }
-                        tooltip={load.dispatcher?.name ?? dispatcherLabel(load.dispatcherId)}
+                        tooltip={
+                          isNewLoad(load) && !touched?.has("dispatcherId")
+                            ? t("loads.selectDispatcher")
+                            : (load.dispatcher?.name ?? dispatcherLabel(load.dispatcherId))
+                        }
                         selectOptions={dispatcherOptions}
+                        selectPlaceholder={requireDispatcher ? t("loads.selectDispatcher") : undefined}
+                        selectRequired={requireDispatcher}
+                        onUnsetSelectAttempt={() => {
+                          toast.error(
+                            t("loads.validation.fieldRequired", {
+                              field: t("loads.dispatcher"),
+                            }),
+                          );
+                        }}
                         validationState={cellValidation(
                           load,
                           "dispatcherId",
@@ -1637,12 +2114,12 @@ export function LoadsSpreadsheet({
                             );
                             throw new Error("validation");
                           }
-                          if (v === load.dispatcherId) return;
+                          if (v === load.dispatcherId && touched?.has("dispatcherId")) return;
                           await patchLoad(load.id, { dispatcherId: v });
                         }}
                       />
                       <SheetEditableCell
-                        editable={canEditField(userRole, "reimbursement", load, activeDraftLoadId, currentUserId)}
+                        editable={canEditField(userRole, "reimbursement", load, activeDraftLoadId, currentUserId, weekEditable)}
                         value={
                           isNewLoad(load) && (load.reimbursement ?? 0) === 0 && !touched?.has("reimbursement")
                             ? ""
@@ -1674,7 +2151,7 @@ export function LoadsSpreadsheet({
                         }}
                       />
                       <SheetEditableCell
-                        editable={canEditField(userRole, "dispatchNotes", load, activeDraftLoadId, currentUserId)}
+                        editable={canEditField(userRole, "dispatchNotes", load, activeDraftLoadId, currentUserId, weekEditable)}
                         value={load.dispatchNotes ?? ""}
                         tooltip={load.dispatchNotes ?? undefined}
                         className={wide ? "max-w-none px-2.5 py-1.5" : "max-w-none"}
@@ -1682,7 +2159,7 @@ export function LoadsSpreadsheet({
                         onSave={async (v) => patchLoad(load.id, { dispatchNotes: v || null })}
                       />
                       <SheetEditableCell
-                        editable={canEditField(userRole, "status", load, activeDraftLoadId, currentUserId)}
+                        editable={canEditField(userRole, "status", load, activeDraftLoadId, currentUserId, weekEditable)}
                         value={load.status}
                         tooltip={translateLoadStatusDesc(t, load.status) ?? translateLoadStatus(t, load.status)}
                         display={<SheetStatus status={load.status} />}
@@ -1694,26 +2171,6 @@ export function LoadsSpreadsheet({
                           patchLoad(load.id, { status: v as LoadUpdate["status"] })
                         }
                       />
-                      {showActionColumn && (
-                        <td
-                          className={`${cellCls} text-center max-w-none overflow-visible w-9 ${!showFinancial ? "border-r-0" : ""}`}
-                        >
-                          {canDeleteLoadRow(userRole, load, currentUserId) && !isLockedRow ? (
-                            <button
-                              type="button"
-                              title={t("loads.sheet.deleteRow")}
-                              className="inline-flex items-center justify-center w-6 h-6 rounded text-red-500 hover:bg-red-500/10 hover:text-red-400 transition-colors"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void deleteLoad(load);
-                              }}
-                              data-testid={`delete-load-${load.id}`}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          ) : null}
-                        </td>
-                      )}
                       {renderFinancialCells(load)}
                     </tr>
                     );
@@ -1737,6 +2194,73 @@ export function LoadsSpreadsheet({
       </tbody>
     </table>
     </div>
+    {showActionColumn && (
+      <LoadsBulkActionBar
+        count={selectedLoadIds.size}
+        busy={bulkBusy}
+        canDelete={canBulkDelete}
+        canMoveWeek={canBulkMoveWeek}
+        onDelete={requestBulkDelete}
+        onMoveWeek={() => setMoveWeekOpen(true)}
+        onClear={clearSelection}
+        t={t}
+      />
+    )}
+    {canBulkMoveWeek && (
+      <LoadsBulkMoveWeekDialog
+        open={moveWeekOpen}
+        onOpenChange={setMoveWeekOpen}
+        weeks={boardWeeks}
+        currentWeekStart={weekStart}
+        count={selectedLoadIds.size}
+        busy={bulkBusy}
+        formatDate={formatDate}
+        t={t}
+        onConfirm={(ws) => void bulkMoveToWeek(ws)}
+      />
+    )}
+    <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t("loads.sheet.bulkDeleteDialogTitle")}</AlertDialogTitle>
+          <AlertDialogDescription asChild>
+            <div className="space-y-2 text-sm text-muted-foreground">
+              <p className="font-medium text-destructive">
+                {t("loads.sheet.bulkDeleteDialogWarning")}
+              </p>
+              <p>
+                {t("loads.sheet.bulkDeleteDialogQuestion", { count: bulkDeleteIds.length })}
+              </p>
+            </div>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={bulkBusy}>{t("common.cancel")}</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-red-600 hover:bg-red-700 text-white"
+            disabled={bulkBusy}
+            onClick={(e) => {
+              e.preventDefault();
+              void confirmBulkDeleteSelected();
+            }}
+          >
+            {bulkBusy ? t("common.saving") : t("loads.sheet.bulkDelete")}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    <WeekPermissionRequestDialog
+      open={requestPermissionOpen}
+      onOpenChange={setRequestPermissionOpen}
+      weekStart={monWeek}
+      loads={loads.filter(
+        (l) =>
+          normalizeWeekStart(l.weekStart || l.puDate) === monWeek
+          && ownsLoad(userRole, l, currentUserId),
+      )}
+      t={t}
+      onSubmitted={() => void refetchWeekAccess()}
+    />
     </div>
   );
 }

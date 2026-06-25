@@ -32,8 +32,7 @@ function FilterSelect({
   return (
     <div
       className={cn(
-        "inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2 py-1.5 shadow-sm",
-        "min-w-[min(100%,150px)] sm:min-w-[170px]",
+        "flex flex-1 min-w-0 items-center gap-2 rounded-lg border border-border bg-card px-2 py-1.5 shadow-sm w-full",
         className,
       )}
       data-testid={testId}
@@ -97,7 +96,7 @@ export function DriverStatusboardFilters({
   };
 
   return (
-    <div className={cn("inline-flex flex-wrap items-center justify-end gap-2", className)}>
+    <div className={cn("flex flex-1 min-w-0 flex-wrap sm:flex-nowrap items-stretch gap-2 w-full", className)}>
       <FilterSelect
         value={driverFilterId ?? STATUSBOARD_FILTER_ALL}
         onChange={(next) =>
@@ -125,8 +124,8 @@ export function DriverStatusboardFilters({
           type="button"
           onClick={handleClear}
           className={cn(
-            "inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2",
-            "text-xs font-semibold uppercase tracking-wide text-muted-foreground shadow-sm",
+            "inline-flex flex-1 sm:flex-none items-center justify-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2",
+            "text-xs font-semibold uppercase tracking-wide text-muted-foreground shadow-sm whitespace-nowrap",
             "hover:text-red-500 hover:border-red-500/40 transition-colors",
           )}
           data-testid="driver-status-clear-filters"

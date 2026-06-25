@@ -21,12 +21,12 @@ function textWidth(text: string, font: string): number {
   return ctx.measureText(text).width;
 }
 
-export const ROUTE_COL_INDICES = [5, 6, 7, 8] as const;
-export const EYE_COL_INDEX = 16;
+export const ROUTE_COL_INDICES = [6, 7, 8, 9] as const;
+export const SELECT_COL_INDEX = 0;
 
 export function filterWidthsForRoute(widths: number[], showRouteDetails: boolean): number[] {
   if (showRouteDetails) return widths;
-  return widths.filter((_, i) => i < 5 || i > 8);
+  return widths.filter((_, i) => i < 6 || i > 9);
 }
 
 export function filterVisibleWidths(
@@ -35,7 +35,7 @@ export function filterVisibleWidths(
 ): number[] {
   return widths.filter((_, i) => {
     if (!opts.showRouteDetails && i >= 5 && i <= 8) return false;
-    if (!opts.showActionColumn && i === EYE_COL_INDEX) return false;
+    if (!opts.showActionColumn && i === SELECT_COL_INDEX) return false;
     return true;
   });
 }
@@ -102,6 +102,7 @@ export function getDefaultSheetWidths(wide: boolean, showFinancial: boolean): nu
   const w = wide;
   const base = [
     40,
+    40,
     56,
     w ? 160 : 140,
     w ? 120 : 100,
@@ -117,7 +118,6 @@ export function getDefaultSheetWidths(wide: boolean, showFinancial: boolean): nu
     Math.max(w ? 152 : 138, headerMinWidth("REIMBURSEMENT", w)),
     Math.max(w ? 160 : 132, headerMinWidth("DISPATCH NOTES", w)),
     92,
-    36,
   ];
   if (showFinancial) {
     base.push(
@@ -156,6 +156,7 @@ export function computeAutoFitWidths(
 ): number[] {
   const em = t("common.emDash");
   const colTexts: string[][] = [
+    [""],
     [t("loads.sheet.rowNumber")],
     [t("loads.sheet.type")],
     [t("loads.sheet.driverName")],
@@ -172,7 +173,6 @@ export function computeAutoFitWidths(
     [t("loads.sheet.reimbursement")],
     [t("loads.sheet.dispatchNotes")],
     [t("loads.sheet.status")],
-    [""],
   ];
   if (showFinancial) {
     colTexts.push(
@@ -186,22 +186,22 @@ export function computeAutoFitWidths(
   let rowNum = 0;
   for (const load of loads) {
     rowNum += 1;
-    colTexts[0].push(String(rowNum));
-    colTexts[1].push(driverTypeShort(load.driver?.driverType));
-    colTexts[2].push(load.driver?.fullName ?? t("loads.sheet.unassigned"));
-    colTexts[3].push(load.broker?.name ?? em);
-    colTexts[4].push(load.loadNumber ?? "");
-    colTexts[5].push(load.puDate?.split("T")[0] ?? "");
-    colTexts[6].push(cityLabel(load.originCity, load.originState, em));
-    colTexts[7].push(load.delDate?.split("T")[0] ?? "");
-    colTexts[8].push(cityLabel(load.destCity, load.destState, em));
-    colTexts[9].push(formatNumber(load.mileage ?? 0));
-    colTexts[10].push(load.rpm != null && load.rpm > 0 ? formatCurrency(load.rpm) : em);
-    colTexts[11].push(formatCurrency(load.rate ?? 0));
-    colTexts[12].push(load.dispatcher?.name ?? em);
-    colTexts[13].push(load.reimbursement ? formatCurrency(load.reimbursement) : em);
-    colTexts[14].push(load.dispatchNotes ?? em);
-    colTexts[15].push(translateLoadStatus(t, load.status));
+    colTexts[1].push(String(rowNum));
+    colTexts[2].push(driverTypeShort(load.driver?.driverType));
+    colTexts[3].push(load.driver?.fullName ?? t("loads.sheet.unassigned"));
+    colTexts[4].push(load.broker?.name ?? em);
+    colTexts[5].push(load.loadNumber ?? "");
+    colTexts[6].push(load.puDate?.split("T")[0] ?? "");
+    colTexts[7].push(cityLabel(load.originCity, load.originState, em));
+    colTexts[8].push(load.delDate?.split("T")[0] ?? "");
+    colTexts[9].push(cityLabel(load.destCity, load.destState, em));
+    colTexts[10].push(formatNumber(load.mileage ?? 0));
+    colTexts[11].push(load.rpm != null && load.rpm > 0 ? formatCurrency(load.rpm) : em);
+    colTexts[12].push(formatCurrency(load.rate ?? 0));
+    colTexts[13].push(load.dispatcher?.name ?? em);
+    colTexts[14].push(load.reimbursement ? formatCurrency(load.reimbursement) : em);
+    colTexts[15].push(load.dispatchNotes ?? em);
+    colTexts[16].push(translateLoadStatus(t, load.status));
     if (showFinancial) {
       colTexts[17].push(load.invoicedAmount != null ? formatCurrency(load.invoicedAmount) : em);
       colTexts[18].push(load.irDiff != null ? formatCurrency(load.irDiff) : em);
@@ -210,22 +210,22 @@ export function computeAutoFitWidths(
     }
   }
 
-  colTexts[2].push(t("loads.sheet.totals"));
+  colTexts[3].push(t("loads.sheet.totals"));
 
   const widths = colTexts.map((texts, i) => {
-    if (i === 16) return 36;
-    const max = i === 14 ? 360 : i === 2 ? 220 : 260;
+    if (i === SELECT_COL_INDEX) return 40;
+    const max = i === 15 ? 360 : i === 3 ? 220 : 260;
     const hdrPad = wide ? HDR_PAD_WIDE : HDR_PAD;
     const hdrFont = wide ? HDR_FONT_WIDE : HDR_FONT;
     const min =
-      i === 0 ? 36
-      : i === 1 ? 48
-      : i === 13 ? headerMinWidth(t("loads.sheet.reimbursement"), wide)
-      : i === 14 ? headerMinWidth(t("loads.sheet.dispatchNotes"), wide)
+      i === 1 ? 36
+      : i === 2 ? 48
+      : i === 14 ? headerMinWidth(t("loads.sheet.reimbursement"), wide)
+      : i === 15 ? headerMinWidth(t("loads.sheet.dispatchNotes"), wide)
       : i === 17 && showFinancial ? headerMinWidth(t("loads.sheet.invoicedAmount"), wide)
       : 56;
-    const font = i <= 15 || (showFinancial && i >= 17) ? hdrFont : CELL_FONT;
-    const pad = i <= 15 || (showFinancial && i >= 17) ? hdrPad : 28;
+    const font = i <= 16 || (showFinancial && i >= 17) ? hdrFont : CELL_FONT;
+    const pad = i <= 16 || (showFinancial && i >= 17) ? hdrPad : 28;
     return fitWidth(texts, min, max, font, pad);
   });
 

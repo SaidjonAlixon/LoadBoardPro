@@ -34,14 +34,13 @@ export function validateDispatcherLoadInput(load: LoadInput): string[] {
   if (!load.mileage || Number(load.mileage) <= 0) errors.push("mileage");
   if (load.rate === undefined || load.rate === null || Number(load.rate) <= 0) errors.push("rate");
   if (!load.status?.trim()) errors.push("status");
+  if (!load.dispatcherId) errors.push("dispatcher");
 
   return errors;
 }
 
 export function validateAdminLoadInput(load: LoadInput): string[] {
-  const errors = validateDispatcherLoadInput(load);
-  if (!load.dispatcherId) errors.push("dispatcher");
-  return errors;
+  return validateDispatcherLoadInput(load);
 }
 
 export function mergeLoadForValidation(

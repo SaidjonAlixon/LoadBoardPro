@@ -12,6 +12,7 @@ export default defineConfig({
     "./src/schema/loads.ts",
     "./src/schema/notifications.ts",
     "./src/schema/board-weeks.ts",
+    "./src/schema/week-locks.ts",
   ],
   dialect: "postgresql",
   dbCredentials: {

@@ -51,6 +51,29 @@ export function weekEndFromStart(weekStart: string): string {
   return addDays(normalizeWeekStart(weekStart), 6);
 }
 
+/** Calendar days between two date strings (local). */
+export function weekDayDiff(fromDate: string, toDate: string): number {
+  const from = parseDateOnly(fromDate);
+  const to = parseDateOnly(toDate);
+  return Math.round((to.getTime() - from.getTime()) / 86_400_000);
+}
+
+/** Shift a load's PU/DEL dates into a target calendar week; preserves weekday offset and span. */
+export function computeLoadWeekMoveDates(
+  load: { weekStart: string; puDate: string; delDate: string },
+  targetWeekStart: string,
+): { weekStart: string; puDate: string; delDate: string } {
+  const targetMonday = normalizeWeekStart(targetWeekStart);
+  const puBase = String(load.puDate).split("T")[0];
+  const delBase = String(load.delDate).split("T")[0];
+  const sourceMonday = normalizeWeekStart(load.weekStart || puBase);
+  const puOffset = weekDayDiff(sourceMonday, puBase);
+  const delSpan = Math.max(0, weekDayDiff(puBase, delBase));
+  const newPu = addDays(targetMonday, puOffset);
+  const newDel = addDays(newPu, delSpan);
+  return { weekStart: targetMonday, puDate: newPu, delDate: newDel };
+}
+
 export function isDateInWeek(dateStr: string, weekStartMonday: string): boolean {
   const mon = normalizeWeekStart(weekStartMonday);
   const sun = weekEndFromStart(mon);

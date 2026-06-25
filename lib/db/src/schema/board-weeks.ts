@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, date } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, date, boolean } from "drizzle-orm/pg-core";
 import { usersTable } from "./users";
 
 /** Shared load-board weeks — visible to all dispatchers. */
@@ -7,4 +7,8 @@ export const boardWeeksTable = pgTable("board_weeks", {
   weekStart: date("week_start", { mode: "string" }).notNull().unique(),
   createdBy: text("created_by").references(() => usersTable.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  isLocked: boolean("is_locked").notNull().default(false),
+  lockedAt: timestamp("locked_at", { withTimezone: true }),
+  lockedBy: text("locked_by").references(() => usersTable.id),
+  scheduledLockAt: timestamp("scheduled_lock_at", { withTimezone: true }),
 });

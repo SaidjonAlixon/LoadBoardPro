@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
@@ -15,9 +15,16 @@ import {
   LogOut,
   Menu,
   X,
+  User,
   ShieldCheck,
-  ChevronRight,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useListNotifications, useGetMe } from "@workspace/api-client-react";
 import { UserAvatar } from "@/components/user-avatar";
 import { LoadBoardProLogo } from "./brand-logo";
@@ -38,9 +45,16 @@ export default function Layout({ children }: LayoutProps) {
   const { t } = useI18n();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { user, logout } = useAuth();
   const [location] = useLocation();
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpen((open) => !open);
+  }, []);
+
+  const closeSidebar = useCallback(() => {
+    setSidebarOpen(false);
+  }, []);
 
   const { data: notifications } = useListNotifications({ unreadOnly: true });
   const unreadCount = notifications?.length || 0;
@@ -67,16 +81,6 @@ export default function Layout({ children }: LayoutProps) {
   const navItems: NavItem[] = isAdmin
     ? [...baseNavItems, { labelKey: "nav.adminPanel", href: "/admin", icon: ShieldCheck, badge: 0 }]
     : baseNavItems;
-
-  const openSidebar = useCallback(() => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
-    setSidebarOpen(true);
-  }, []);
-
-  const scheduleCloseSidebar = useCallback(() => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
-    closeTimer.current = setTimeout(() => setSidebarOpen(false), 280);
-  }, []);
 
   const NavLink = ({ item, onClick }: { item: NavItem; onClick?: () => void }) => {
     const isActive =
@@ -110,7 +114,75 @@ export default function Layout({ children }: LayoutProps) {
     window.location.href = "/";
   };
 
-  const isFullWidth = location === "/loads" || location === "/accounting";
+  const userEmail = me?.email || user?.email || "";
+
+  const UserProfileMenu = ({ showName = true }: { showName?: boolean }) => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={`flex items-center gap-2 rounded-lg outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring ${
+            showName ? "border-l border-border pl-2 py-1" : "p-0.5"
+          }`}
+          aria-label={t("settings.profile")}
+        >
+          <UserAvatar
+            name={displayName}
+            email={userEmail}
+            avatarKey={me?.avatarKey}
+            className="h-8 w-8"
+            fallbackClassName="bg-primary text-primary-foreground text-xs"
+          />
+          {showName && (
+            <span className="text-sm font-medium text-foreground hidden lg:block">{displayName}</span>
+          )}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-60">
+        <div className="flex items-center gap-3 px-2 py-2.5">
+          <UserAvatar
+            name={displayName}
+            email={userEmail}
+            avatarKey={me?.avatarKey}
+            className="h-10 w-10"
+            fallbackClassName="bg-primary text-primary-foreground text-sm"
+          />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold text-foreground">{displayName}</p>
+            {userEmail ? (
+              <p className="truncate text-xs text-muted-foreground">{userEmail}</p>
+            ) : null}
+            <p className="text-xs text-muted-foreground">{translateRole(t, userRole)}</p>
+          </div>
+        </div>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild>
+          <Link href="/settings" className="flex cursor-pointer items-center gap-2">
+            <User size={16} />
+            {t("settings.profile")}
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link href="/settings" className="flex cursor-pointer items-center gap-2">
+            <Settings size={16} />
+            {t("nav.settings")}
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onClick={() => void handleLogout()}
+          className="cursor-pointer text-destructive focus:text-destructive"
+          data-testid="button-logout-header"
+        >
+          <LogOut size={16} />
+          {t("common.logout")}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+
+  const isFullWidth =
+    location === "/loads" || location === "/accounting" || location === "/dashboard";
   const isCompactPage = location === "/settings";
 
   const sidebarContent = (onNavClick?: () => void) => (
@@ -156,49 +228,25 @@ export default function Layout({ children }: LayoutProps) {
 
   return (
     <div className="flex h-screen bg-background">
-      {/* Desktop: hover edge + slide-out sidebar */}
-      <div
-        className="hidden md:block fixed inset-y-0 left-0 z-50"
-        onMouseLeave={scheduleCloseSidebar}
-      >
-        {/* Left edge trigger strip */}
+      {/* Desktop: click-to-open sidebar */}
+      {sidebarOpen && (
         <div
-          className={`absolute inset-y-0 left-0 z-10 flex items-center justify-center transition-all duration-300 ${
-            sidebarOpen ? "w-0 opacity-0" : "w-3 opacity-100"
-          }`}
-          onMouseEnter={openSidebar}
-        >
-          <div className="h-16 w-1 rounded-full bg-primary/30 hover:bg-accent/60 transition-colors" />
-        </div>
+          className="hidden md:block fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px]"
+          onClick={closeSidebar}
+          aria-hidden
+        />
+      )}
 
-        {/* Hover catcher when sidebar closed — wider invisible zone */}
-        {!sidebarOpen && (
-          <div
-            className="absolute inset-y-0 left-0 w-4 z-[5]"
-            onMouseEnter={openSidebar}
-          />
-        )}
-
-        {/* Sidebar panel */}
-        <aside
-          className={`absolute inset-y-0 left-0 w-[260px] flex flex-col overflow-hidden transition-transform duration-300 ease-out shadow-2xl shadow-black/30 ${
-            sidebarOpen ? "translate-x-0" : "-translate-x-full"
-          }`}
-          style={{
-            background: "linear-gradient(180deg, #1A3C5E 0%, #152e47 55%, #0f2236 100%)",
-          }}
-          onMouseEnter={openSidebar}
-        >
-          {sidebarContent()}
-        </aside>
-
-        {/* Subtle edge hint when open */}
-        {sidebarOpen && (
-          <div className="absolute top-1/2 -translate-y-1/2 left-[260px] pointer-events-none">
-            <ChevronRight className="h-4 w-4 text-primary/40" />
-          </div>
-        )}
-      </div>
+      <aside
+        className={`hidden md:flex fixed inset-y-0 left-0 z-50 w-[260px] flex-col overflow-hidden transition-transform duration-300 ease-out shadow-2xl shadow-black/30 ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+        style={{
+          background: "linear-gradient(180deg, #1A3C5E 0%, #152e47 55%, #0f2236 100%)",
+        }}
+      >
+        {sidebarContent(closeSidebar)}
+      </aside>
 
       {/* Mobile overlay menu */}
       {isMobileMenuOpen && (
@@ -245,18 +293,20 @@ export default function Layout({ children }: LayoutProps) {
             <Menu size={24} />
           </button>
           <LoadBoardProLogo className="h-12 w-auto max-w-[300px] shrink-0" />
-          <UserAvatar
-            name={displayName}
-            email={me?.email || user?.email}
-            avatarKey={me?.avatarKey}
-            className="h-8 w-8"
-            fallbackClassName="bg-primary text-primary-foreground text-sm"
-          />
+          <UserProfileMenu showName={false} />
         </header>
 
         <header className="hidden md:flex bg-card/80 backdrop-blur-sm border-b border-border h-[4.5rem] items-center justify-between gap-4 px-5 shadow-sm z-10">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="w-1 h-5 rounded-full bg-primary/30 shrink-0" />
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              aria-label={t("nav.menu")}
+              aria-expanded={sidebarOpen}
+            >
+              <Menu size={22} strokeWidth={2} />
+            </button>
             <LoadBoardProLogo className="h-14 w-auto max-w-[340px] shrink-0" />
           </div>
           <div className="flex items-center gap-3">
@@ -276,16 +326,7 @@ export default function Layout({ children }: LayoutProps) {
                 </span>
               )}
             </Link>
-            <div className="flex items-center gap-2 pl-2 border-l border-border">
-              <UserAvatar
-                name={displayName}
-                email={me?.email || user?.email}
-                avatarKey={me?.avatarKey}
-                className="h-8 w-8"
-                fallbackClassName="bg-primary text-primary-foreground text-xs"
-              />
-              <span className="text-sm font-medium text-foreground hidden lg:block">{displayName}</span>
-            </div>
+            <UserProfileMenu />
           </div>
         </header>
 

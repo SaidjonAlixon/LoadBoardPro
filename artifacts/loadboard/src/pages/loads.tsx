@@ -730,12 +730,14 @@ function FilterPanel({
   filters,
   onChange,
   canFilterDispatchers,
+  embedded = false,
 }: {
   open: boolean;
   onClose: () => void;
   filters: Filters;
   onChange: (f: Filters) => void;
   canFilterDispatchers: boolean;
+  embedded?: boolean;
 }) {
   const { t } = useI18n();
   const { data: drivers } = useListDrivers({});
@@ -752,7 +754,13 @@ function FilterPanel({
     local.status !== "" || local.driverId !== "" || local.dispatcherId !== "";
 
   return (
-    <div className="bg-card border border-border rounded-lg shadow-sm p-3 space-y-3">
+    <div
+      className={
+        embedded
+          ? "space-y-3"
+          : "bg-card border border-border rounded-lg shadow-sm p-3 space-y-3"
+      }
+    >
       <div className="flex items-center justify-between gap-2">
         <p className="font-semibold text-foreground text-xs uppercase tracking-wide">{t("common.filters")}</p>
         <div className="flex items-center gap-2">
@@ -1017,54 +1025,7 @@ export default function LoadsList() {
   });
 
   return (
-    <div className="space-y-2 flex-1 flex flex-col min-h-0">
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative flex-1 min-w-[200px]">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-            <Input
-              placeholder={t("loads.search")}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="h-9 pl-8 text-sm bg-card border-border shadow-sm focus:border-primary"
-              data-testid="input-search-loads"
-            />
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className={`h-9 border-border shadow-sm gap-1.5 ${activeFilters > 0 ? "border-primary text-foreground bg-primary/10" : "text-muted-foreground"}`}
-            onClick={() => setFilterOpen((v) => !v)}
-            data-testid="button-filter-loads"
-          >
-            <Filter className="h-3.5 w-3.5" />
-            <span className="text-sm">{t("common.filters")}</span>
-            {activeFilters > 0 && (
-              <span className="bg-primary text-white text-[10px] rounded-full min-w-4 h-4 px-1 flex items-center justify-center font-bold">
-                {activeFilters}
-              </span>
-            )}
-          </Button>
-          <Button
-            size="sm"
-            className="btn-export-excel no-default-hover-elevate h-9 gap-1.5"
-            onClick={() => void handleExportExcel()}
-            disabled={exporting}
-          >
-            <Download className="h-3.5 w-3.5" />
-            <span className="text-sm">{exporting ? t("loads.exporting") : t("loads.exportExcel")}</span>
-          </Button>
-        </div>
-
-        <FilterPanel
-          open={filterOpen}
-          onClose={() => setFilterOpen(false)}
-          filters={filters}
-          onChange={setFilters}
-          canFilterDispatchers={canFilterDispatchers}
-        />
-      </div>
-
+    <div className="flex-1 flex flex-col min-h-0">
       <div className="flex-1 flex flex-col overflow-hidden border border-border bg-card min-h-0 w-full">
         <div className="flex-1 min-h-0 overflow-hidden">
           <LoadsSpreadsheet
@@ -1084,6 +1045,64 @@ export default function LoadsList() {
             filterDriverId={filters.driverId || undefined}
             dispatcherFilterId={canFilterDispatchers ? filters.dispatcherId || undefined : undefined}
             dispatchers={dispatchers ?? []}
+            toolbarLeading={
+              <>
+                <div className="relative w-40 shrink-0 sm:w-44">
+                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+                  <Input
+                    placeholder={t("loads.search")}
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="h-7 pl-7 pr-2 text-xs bg-card border-border shadow-sm focus:border-primary"
+                    data-testid="input-search-loads"
+                  />
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={`h-7 shrink-0 border-border px-2 shadow-sm gap-1 ${
+                    activeFilters > 0
+                      ? "border-primary text-foreground bg-primary/10"
+                      : "text-muted-foreground"
+                  }`}
+                  onClick={() => setFilterOpen((v) => !v)}
+                  data-testid="button-filter-loads"
+                  title={t("common.filters")}
+                >
+                  <Filter className="h-3 w-3" />
+                  <span className="hidden sm:inline text-[11px]">{t("common.filters")}</span>
+                  {activeFilters > 0 && (
+                    <span className="bg-primary text-white text-[9px] rounded-full min-w-3.5 h-3.5 px-0.5 flex items-center justify-center font-bold">
+                      {activeFilters}
+                    </span>
+                  )}
+                </Button>
+                <Button
+                  size="sm"
+                  className="btn-export-excel no-default-hover-elevate h-7 shrink-0 gap-1 px-2"
+                  onClick={() => void handleExportExcel()}
+                  disabled={exporting}
+                  title={exporting ? t("loads.exporting") : t("loads.exportExcel")}
+                >
+                  <Download className="h-3 w-3" />
+                  <span className="hidden md:inline text-[11px]">
+                    {exporting ? t("loads.exporting") : t("loads.exportExcel")}
+                  </span>
+                </Button>
+              </>
+            }
+            toolbarFilterPanel={
+              filterOpen ? (
+                <FilterPanel
+                  open={filterOpen}
+                  onClose={() => setFilterOpen(false)}
+                  filters={filters}
+                  onChange={setFilters}
+                  canFilterDispatchers={canFilterDispatchers}
+                  embedded
+                />
+              ) : null
+            }
             emptyMessage={{
               title: t("loads.noLoads"),
               subtitle:

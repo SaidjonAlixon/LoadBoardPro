@@ -14,7 +14,6 @@ import { DriverStatusChips } from "@/components/driver-status-chips";
 import { DriverStatusboardFilters } from "@/components/driver-status-entity-filter";
 import { DriverStatusboard } from "@/components/driver-statusboard";
 import { LeaderboardRank } from "@/components/leaderboard-rank";
-import { LoadsWeekToolbar } from "@/components/loads-week-toolbar";
 import {
   fetchDriversToday,
   countDriversByStatus,
@@ -32,8 +31,10 @@ import { toast } from "sonner";
 import {
   buildDashboardFilterParams,
   formatWeekRangeLabel,
+  getMondayOfWeek,
   getThisWeekStart,
   normalizeWeekStart,
+  toIsoDateLocal,
 } from "@/lib/date-range";
 import {
   exportDashboardExcel,
@@ -69,7 +70,11 @@ export default function Dashboard() {
   const [statusboardDriverFilterId, setStatusboardDriverFilterId] = useState<string | null>(null);
   const [statusboardDispatcherFilterKey, setStatusboardDispatcherFilterKey] = useState<string | null>(null);
   const [driverScope, setDriverScope] = useState<DriversTodayScope>("company");
-  const [statusboardWeek, setStatusboardWeek] = useState(() => getThisWeekStart());
+
+  const statusboardWeek = useMemo(
+    () => getMondayOfWeek(toIsoDateLocal(now)),
+    [now.getFullYear(), now.getMonth(), now.getDate()],
+  );
 
   const { data: me } = useGetMe({});
   const isDispatcher = me?.role === "dispatcher";
@@ -601,16 +606,7 @@ export default function Dashboard() {
                 {isDispatcher ? t("dashboard.subtitleDispatcher") : t("dashboard.driverStatsCompany")}
               </p>
             </div>
-            <div className="flex flex-col sm:items-end gap-2">
-              <LoadsWeekToolbar
-                weekStart={statusboardWeek}
-                weeks={weeks}
-                onWeekChange={setStatusboardWeek}
-                onCreateWeek={() => {}}
-                formatDate={formatDate}
-                t={t}
-                canManageWeeks={false}
-              />
+            <div className="flex flex-col sm:items-end">
               <p
                 className="text-sm font-semibold text-foreground tabular-nums"
                 data-testid="dashboard-live-clock"
@@ -687,11 +683,11 @@ export default function Dashboard() {
                   dispatcherFilterKey={statusboardDispatcherFilterKey}
                   drivers={driversToday.allDrivers}
                   groups={driversToday.dispatcherGroups}
-                  weekLabel={statusboardWeekLabel}
                   weekStart={driversToday.weekStart}
                   groupByDispatcher={groupStatusboardByDispatcher}
                   editorUserId={me?.id}
                   editorRole={me?.role}
+                  scopedDispatcherId={todayDispatcherId}
                 />
               )}
             </>

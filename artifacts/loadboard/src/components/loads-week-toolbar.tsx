@@ -13,7 +13,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Calendar, ChevronDown, ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { Calendar, ChevronDown, ChevronLeft, ChevronRight, Lock, Plus } from "lucide-react";
 import {
   addDays,
   formatWeekRangeLabel,
@@ -24,6 +24,9 @@ import {
 export type BoardWeek = {
   weekStart: string;
   loadCount?: number;
+  isLocked?: boolean;
+  scheduledLockAt?: string | null;
+  lockedAt?: string | null;
 };
 
 type Props = {
@@ -73,6 +76,16 @@ export function LoadsWeekToolbar({
     }
     return map;
   }, [weeks]);
+
+  const lockedByWeek = useMemo(() => {
+    const map = new Map<string, boolean>();
+    for (const w of weeks) {
+      if (w.isLocked) map.set(normalizeWeekStart(w.weekStart), true);
+    }
+    return map;
+  }, [weeks]);
+
+  const activeWeekLocked = lockedByWeek.get(active) ?? false;
 
   const nextWeekStart = useMemo(() => {
     const starts = weekOptions.length > 0 ? weekOptions : [getThisWeekStart()];
@@ -128,6 +141,9 @@ export function LoadsWeekToolbar({
                 title={formatWeekRangeLabel(active, formatDate)}
               >
                 <Calendar className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                {activeWeekLocked && (
+                  <Lock className="h-3 w-3 shrink-0 text-red-600" aria-label={t("weekLock.locked")} />
+                )}
                 <span className="whitespace-nowrap">{formatWeekRangeLabel(active, formatDate)}</span>
                 {isViewingCurrentWeek && (
                   <span className="text-[9px] font-bold uppercase tracking-wide text-green-800 bg-green-100 px-1 py-0.5 rounded shrink-0">
@@ -147,6 +163,7 @@ export function LoadsWeekToolbar({
                 weekOptions.map((ws) => {
                   const isSelected = ws === active;
                   const isCurrentCalendarWeek = ws === calendarWeekStart;
+                  const isLocked = lockedByWeek.get(ws) ?? false;
                   return (
                     <button
                       key={ws}
@@ -160,7 +177,10 @@ export function LoadsWeekToolbar({
                       }}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span>{formatWeekRangeLabel(ws, formatDate)}</span>
+                        <span className="flex items-center gap-1.5">
+                          {isLocked && <Lock className="h-3 w-3 text-red-600 shrink-0" />}
+                          {formatWeekRangeLabel(ws, formatDate)}
+                        </span>
                         {isCurrentCalendarWeek && (
                           <span className="text-[9px] font-bold uppercase tracking-wide text-green-800 bg-green-100 px-1.5 py-0.5 rounded shrink-0">
                             {t("dashboard.weekActive")}

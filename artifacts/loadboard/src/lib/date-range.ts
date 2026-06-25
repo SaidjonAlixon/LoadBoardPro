@@ -46,6 +46,13 @@ export function addDays(dateStr: string, days: number): string {
   return toIsoDateLocal(d);
 }
 
+/** Calendar days from one week Monday to another. */
+export function weekDayDiff(fromWeekStart: string, toWeekStart: string): number {
+  const from = parseDateOnly(normalizeWeekStart(fromWeekStart));
+  const to = parseDateOnly(normalizeWeekStart(toWeekStart));
+  return Math.round((to.getTime() - from.getTime()) / 86_400_000);
+}
+
 export function weekEndFromStart(weekStart: string): string {
   return addDays(normalizeWeekStart(weekStart), 6);
 }

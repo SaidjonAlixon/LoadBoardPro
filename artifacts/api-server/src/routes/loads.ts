@@ -3,13 +3,15 @@ import { db, loadsTable, driversTable, usersTable, brokersTable, notificationsTa
 import { eq, and, or, like, ilike, desc, gte, lte, sql, inArray, asc, isNull } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/requireAuth";
 import { isLoadDispatcherLocked } from "../lib/load-statuses";
-import { getMondayOfWeek, normalizeWeekStart, todayIsoLocal, weekEndFromStart } from "../lib/week-calendar";
+import { getMondayOfWeek, normalizeWeekStart, todayIsoLocal, weekEndFromStart, computeLoadWeekMoveDates } from "../lib/week-calendar";
 import { applyWeekPeriodFilters } from "../lib/period-filters";
 import {
   isDraftLoadNumberValue,
   validateDispatcherLoadInput,
   validateAdminLoadInput,
+  mergeLoadForValidation,
 } from "../lib/validate-load";
+import { denyIfDispatcherLockedWeek } from "../lib/week-lock-access";
 
 const router = Router();
 
@@ -173,6 +175,12 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
 
   const resolvedWeekStart = getMondayOfWeek(puDate || weekStart || todayIsoLocal());
 
+  if (
+    await denyIfDispatcherLockedWeek(resolvedWeekStart, req.userId, req.userRole, res)
+  ) {
+    return;
+  }
+
   const isDispatcherRole = req.userRole === "dispatcher" || req.userRole === "admin";
   if (isDispatcherRole && !isDraftLoadNumberValue(loadNumber)) {
     const payload = {
@@ -203,7 +211,7 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
     id: crypto.randomUUID(),
     loadNumber,
     driverId: driverId ?? null,
-    dispatcherId: req.userRole === "dispatcher" ? req.userId! : (dispatcherId ?? null),
+    dispatcherId: dispatcherId ?? null,
     brokerId: brokerId ?? null,
     puDate,
     delDate,
@@ -224,8 +232,45 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
   res.status(201).json(serializeLoad(load));
 });
 
+// POST /api/loads/bulk-move-week — move loads to another board week (accounting/admin)
+router.post("/bulk-move-week", requireAuth, requireRole("admin", "accounting"), async (req: AuthRequest, res) => {
+  const { loadIds, targetWeekStart } = req.body as {
+    loadIds?: string[];
+    targetWeekStart?: string;
+  };
+
+  if (!Array.isArray(loadIds) || loadIds.length === 0 || !targetWeekStart) {
+    res.status(400).json({ error: "loadIds and targetWeekStart required" });
+    return;
+  }
+
+  const targetMonday = normalizeWeekStart(targetWeekStart);
+  const uniqueIds = [...new Set(loadIds)];
+
+  const rows = await db
+    .select()
+    .from(loadsTable)
+    .where(and(eq(loadsTable.isDeleted, false), inArray(loadsTable.id, uniqueIds)));
+
+  if (rows.length !== uniqueIds.length) {
+    res.status(400).json({ error: "One or more loads were not found" });
+    return;
+  }
+
+  try {
+    for (const load of rows) {
+      const dates = computeLoadWeekMoveDates(load, targetMonday);
+      await db.update(loadsTable).set(dates).where(eq(loadsTable.id, load.id));
+    }
+    res.json({ moved: rows.length, targetWeekStart: targetMonday });
+  } catch (err) {
+    req.log.error({ err, loadIds: uniqueIds, targetWeekStart: targetMonday }, "Bulk move week failed");
+    res.status(500).json({ error: "Failed to move loads to the selected week" });
+  }
+});
+
 // POST /api/loads/reorder — reorder loads within a driver group
-router.post("/reorder", requireAuth, requireRole("admin", "dispatcher"), async (req: AuthRequest, res) => {
+router.post("/reorder", requireAuth, requireRole("admin", "dispatcher", "accounting"), async (req: AuthRequest, res) => {
   const { driverId, loadIds } = req.body as { driverId?: string | null; loadIds?: string[] };
 
   if (!Array.isArray(loadIds) || loadIds.length === 0) {
@@ -251,32 +296,11 @@ router.post("/reorder", requireAuth, requireRole("admin", "dispatcher"), async (
     }
   }
 
-  if (req.userRole === "dispatcher") {
-    const rowById = new Map(rows.map((row) => [row.id, row]));
-    const isOwned = (id: string) => rowById.get(id)?.dispatcherId === req.userId;
-    const prevOrder = sortLoadsBySortOrder(rows).map((row) => row.id);
-    const prevOthers = prevOrder.filter((id) => !isOwned(id));
-    const newOthers = loadIds.filter((id) => !isOwned(id));
-
-    if (
-      prevOthers.length !== newOthers.length
-      || prevOthers.some((id, index) => id !== newOthers[index])
-    ) {
-      res.status(403).json({ error: "Cannot reorder other dispatchers' loads" });
-      return;
-    }
-
-    const prevOwn = prevOrder.filter(isOwned);
-    const newOwn = loadIds.filter(isOwned);
-    if (prevOwn.length !== newOwn.length) {
-      res.status(400).json({ error: "Invalid load ids" });
-      return;
-    }
-
-    if (prevOwn.length === 0) {
-      res.status(403).json({ error: "Cannot reorder other dispatchers' loads" });
-      return;
-    }
+  const reorderWeek = rows[0]?.weekStart ?? rows[0]?.puDate ?? todayIsoLocal();
+  if (
+    await denyIfDispatcherLockedWeek(reorderWeek, req.userId, req.userRole, res)
+  ) {
+    return;
   }
 
   await Promise.all(
@@ -312,25 +336,32 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
     return;
   }
 
-  if (req.userRole === "dispatcher" && load.dispatcherId !== req.userId) {
-    res.status(403).json({ error: "You can only edit your own loads" });
+  const targetWeekStart = String(
+    req.body.weekStart ?? load.weekStart ?? load.puDate ?? todayIsoLocal(),
+  );
+  if (
+    await denyIfDispatcherLockedWeek(targetWeekStart, req.userId, req.userRole, res)
+  ) {
     return;
   }
 
   // Role-based field restrictions
   const isAccounting = req.userRole === "accounting";
   const isDispatcher = req.userRole === "dispatcher";
+  const isAdmin = req.userRole === "admin";
+  const canFullyEditLoad = isAccounting || isAdmin;
 
   const dispatcherFields = [
-    "loadNumber", "brokerId", "dispatcherId",
+    "loadNumber", "driverId", "brokerId", "dispatcherId",
     "puDate", "delDate", "puScheduledAt", "delScheduledAt",
     "originCity", "originState", "destCity", "destState",
     "mileage", "rate", "reimbursement", "dispatchNotes", "status",
   ];
   const accountingFields = ["invoicedAmount", "brokerPaid", "notes", "status"];
+  const accountingAllowed = [...new Set([...dispatcherFields, ...accountingFields, "weekStart"])];
 
-  const allowed = isAccounting
-    ? accountingFields
+  const allowed = canFullyEditLoad
+    ? accountingAllowed
     : isDispatcher
       ? dispatcherFields
       : Object.keys(req.body);
@@ -359,6 +390,7 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
     invoicedAmount: "invoicedAmount",
     brokerPaid: "brokerPaid",
     notes: "notes",
+    weekStart: "weekStart",
   };
 
   for (const key of allowed) {
@@ -383,6 +415,15 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
     }
   }
 
+  const canAssignDriver = isDispatcher || isAdmin || isAccounting;
+  if (
+    canAssignDriver &&
+    body.driverId !== undefined &&
+    (body.driverId ?? null) !== (load.driverId ?? null)
+  ) {
+    updates.driverId = body.driverId ?? null;
+  }
+
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: "No valid fields to update" });
     return;
@@ -405,6 +446,19 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
 
   if ("driverId" in updates && (updates.driverId ?? null) !== (load.driverId ?? null)) {
     const nextDriverId = (updates.driverId as string | null) ?? null;
+    if (nextDriverId) {
+      const driver = await db.query.driversTable.findFirst({
+        where: and(
+          eq(driversTable.id, nextDriverId),
+          eq(driversTable.isActive, true),
+          isNull(driversTable.deletedAt),
+        ),
+      });
+      if (!driver) {
+        res.status(400).json({ error: "Invalid driver" });
+        return;
+      }
+    }
     const driverCondition = nextDriverId
       ? eq(loadsTable.driverId, nextDriverId)
       : isNull(loadsTable.driverId);
@@ -440,8 +494,8 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
     updates.delReminderSentAt = null;
   }
 
-  const isDispatcherRole = req.userRole === "dispatcher" || req.userRole === "admin";
-  if (isDispatcherRole && "loadNumber" in updates) {
+  const isDispatcherRole = isDispatcher || isAdmin;
+  if ((isDispatcherRole || isAccounting) && "loadNumber" in updates) {
     const num = String(updates.loadNumber ?? "").trim();
     if (!num || num.startsWith("NEW-")) {
       res.status(400).json({ error: "Invalid load number" });
@@ -449,7 +503,36 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
     }
   }
 
-  const [updated] = await db.update(loadsTable).set(updates).where(eq(loadsTable.id, req.params.id)).returning();
+  const effectiveWeek =
+    (updates.weekStart as string | undefined) ?? load.weekStart ?? load.puDate ?? todayIsoLocal();
+  if (
+    await denyIfDispatcherLockedWeek(effectiveWeek, req.userId, req.userRole, res)
+  ) {
+    return;
+  }
+
+  if (isDispatcher || isAdmin) {
+    const mergedForValidation = mergeLoadForValidation(load, updates);
+    const finalLoadNumber = String(mergedForValidation.loadNumber ?? "");
+    if (!isDraftLoadNumberValue(finalLoadNumber) && !mergedForValidation.dispatcherId) {
+      res.status(400).json({ error: "Dispatcher is required" });
+      return;
+    }
+  }
+
+  let updated: typeof loadsTable.$inferSelect | undefined;
+  try {
+    [updated] = await db
+      .update(loadsTable)
+      .set(updates)
+      .where(eq(loadsTable.id, req.params.id))
+      .returning();
+  } catch (err) {
+    req.log.error({ err, loadId: req.params.id, updates }, "Load patch failed");
+    res.status(500).json({ error: "Failed to update load" });
+    return;
+  }
+
   if (!updated) {
     res.status(404).json({ error: "Not found" });
     return;
@@ -473,8 +556,8 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
   res.json(serializeLoad(updated));
 });
 
-// DELETE /api/loads/:id (admin + dispatcher, soft delete)
-router.delete("/:id", requireAuth, requireRole("admin", "dispatcher"), async (req: AuthRequest, res) => {
+// DELETE /api/loads/:id (admin + dispatcher + accounting, soft delete)
+router.delete("/:id", requireAuth, requireRole("admin", "dispatcher", "accounting"), async (req: AuthRequest, res) => {
   const load = await db.query.loadsTable.findFirst({
     where: and(eq(loadsTable.id, req.params.id), eq(loadsTable.isDeleted, false)),
   });
@@ -482,12 +565,18 @@ router.delete("/:id", requireAuth, requireRole("admin", "dispatcher"), async (re
     res.status(404).json({ error: "Not found" });
     return;
   }
-  if (req.userRole === "dispatcher" && load.dispatcherId !== req.userId) {
-    res.status(403).json({ error: "You can only delete your own loads" });
-    return;
-  }
   if (req.userRole === "dispatcher" && isLoadDispatcherLocked(load.status)) {
     res.status(403).json({ error: "Load is locked for accounting review" });
+    return;
+  }
+  if (
+    await denyIfDispatcherLockedWeek(
+      load.weekStart ?? load.puDate ?? todayIsoLocal(),
+      req.userId,
+      req.userRole,
+      res,
+    )
+  ) {
     return;
   }
   await db.update(loadsTable).set({ isDeleted: true }).where(eq(loadsTable.id, req.params.id));

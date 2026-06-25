@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { SheetDatePicker } from "@/components/sheet-date-picker";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import {
   blockInvalidNumericKey,
   handleNumericPaste,
   sanitizeNumericInput,
 } from "@/lib/numeric-input";
+import { cn } from "@/lib/utils";
 
 const INPUT_CLS =
   "w-full h-full min-h-[22px] px-1 py-0 text-[11px] border-2 border-accent outline-none bg-sheet-cell text-sheet-cell-fg rounded-none";
+
+const DATE_INPUT_CLS =
+  "w-full h-full min-h-[24px] px-1.5 py-0 text-[11px] border border-[#0078d4] outline-none bg-white text-left text-neutral-900 rounded-none shadow-none";
 
 /** Keeps cell text inside borders; pair with table-fixed on the table. */
 export const SHEET_CELL_CLIP = "max-w-0 overflow-hidden text-ellipsis whitespace-nowrap";
@@ -36,6 +42,29 @@ interface SheetEditableCellProps {
   validationState?: "valid" | "invalid" | "neutral";
   /** Called after Enter commits the cell (saved or unchanged). */
   onEnterAdvance?: () => void;
+  datePlaceholder?: string;
+  /** Month shown when opening picker without a selected date. */
+  dateDefaultMonth?: Date;
+  /** Placeholder label for required selects; value stays unset until user picks an option. */
+  selectPlaceholder?: string;
+  selectRequired?: boolean;
+  /** Fired when user tries to leave a required select without choosing. */
+  onUnsetSelectAttempt?: () => void;
+}
+
+const SELECT_UNSET = "__sheet_unset__";
+
+function parseIsoDate(iso: string): Date | undefined {
+  if (!iso?.trim()) return undefined;
+  const d = new Date(`${iso.split("T")[0]}T12:00:00`);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+function formatIsoDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 export function SheetEditableCell({
@@ -53,20 +82,53 @@ export function SheetEditableCell({
   autoEdit = false,
   validationState = "neutral",
   onEnterAdvance,
+  datePlaceholder = "—",
+  dateDefaultMonth,
+  selectPlaceholder,
+  selectRequired = false,
+  onUnsetSelectAttempt,
 }: SheetEditableCellProps) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
+  const normalizedValue =
+    selectPlaceholder && selectRequired && !value.trim() ? SELECT_UNSET : value;
+  const [draft, setDraft] = useState(normalizedValue);
   const [saving, setSaving] = useState(false);
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [dateText, setDateText] = useState("");
   const inputRef = useRef<HTMLInputElement | HTMLSelectElement>(null);
   const didAutoEdit = useRef(false);
+  const calendarOpenRef = useRef(false);
 
   useEffect(() => {
-    if (!editing) setDraft(value);
-  }, [value, editing]);
+    calendarOpenRef.current = calendarOpen;
+  }, [calendarOpen]);
+
+  const isUnsetSelect = (v: string) =>
+    selectRequired && selectPlaceholder && (v === SELECT_UNSET || !v.trim());
+
+  const renderedSelectOptions = selectPlaceholder
+    ? [{ value: SELECT_UNSET, label: selectPlaceholder }, ...selectOptions ?? []]
+    : selectOptions;
 
   useEffect(() => {
-    if (editing) inputRef.current?.focus();
-  }, [editing]);
+    if (!editing) setDraft(normalizedValue);
+  }, [normalizedValue, editing]);
+
+  useEffect(() => {
+    if (editing && inputType === "date") {
+      const iso = value.split("T")[0];
+      setDateText(iso && iso.trim() ? isoToSheetDate(iso) : "");
+      setCalendarOpen(false);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
+    }
+    if (!editing) {
+      setCalendarOpen(false);
+    }
+  }, [editing, inputType, value]);
+
+  useEffect(() => {
+    if (editing && inputType !== "date") inputRef.current?.focus();
+  }, [editing, inputType]);
 
   useEffect(() => {
     if (!autoEdit) {
@@ -75,10 +137,10 @@ export function SheetEditableCell({
     }
     if (autoEdit && editable && !didAutoEdit.current) {
       didAutoEdit.current = true;
-      setDraft(value);
+      setDraft(normalizedValue);
       setEditing(true);
     }
-  }, [autoEdit, editable, value]);
+  }, [autoEdit, editable, normalizedValue]);
 
   const alignCls =
     align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left";
@@ -86,26 +148,88 @@ export function SheetEditableCell({
   const startEdit = (e: React.MouseEvent) => {
     if (!editable || saving) return;
     e.stopPropagation();
-    setDraft(value);
+    setDraft(normalizedValue);
     setEditing(true);
   };
 
   const cancel = () => {
-    setDraft(value);
+    setDraft(normalizedValue);
+    setCalendarOpen(false);
     setEditing(false);
   };
 
-  const commit = async () => {
-    if (!editing) return;
-    if (draft === value) {
+  const commitDate = async (d: Date, advance = false) => {
+    const iso = formatIsoDate(d);
+    setDateText(isoToSheetDate(iso));
+    setCalendarOpen(false);
+    if (iso === value.split("T")[0]) {
       setEditing(false);
-      onEnterAdvance?.();
+      if (advance) onEnterAdvance?.();
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(iso);
+      setEditing(false);
+      if (advance) onEnterAdvance?.();
+    } catch {
+      setEditing(true);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const commitDateFromText = async (advance = false) => {
+    const raw = dateText.trim();
+    if (!raw) {
+      if (!value) {
+        setEditing(false);
+        setCalendarOpen(false);
+      }
+      return;
+    }
+    const iso = sheetDateToIso(raw);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return;
+    const d = parseIsoDate(iso);
+    if (!d) return;
+    await commitDate(d, advance);
+  };
+
+  const commit = async (advance = false) => {
+    if (!editing) return;
+    if (selectOptions && isUnsetSelect(draft)) {
+      if (advance) onUnsetSelectAttempt?.();
+      return;
+    }
+    if (draft === normalizedValue) {
+      setEditing(false);
+      if (advance && !(selectOptions && isUnsetSelect(draft))) onEnterAdvance?.();
       return;
     }
     setSaving(true);
     try {
       await onSave(draft);
       setEditing(false);
+      if (advance) onEnterAdvance?.();
+    } catch {
+      setEditing(true);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const commitSelect = async (next: string) => {
+    if (isUnsetSelect(next)) return;
+    setDraft(next);
+    if (next === normalizedValue) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(next);
+      setEditing(false);
+      onEnterAdvance?.();
     } catch {
       setEditing(true);
     } finally {
@@ -120,7 +244,7 @@ export function SheetEditableCell({
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      void commit();
+      void commit(true);
     } else if (e.key === "Escape") {
       e.preventDefault();
       cancel();
@@ -137,21 +261,88 @@ export function SheetEditableCell({
         : "";
 
   const hoverTitle = tooltip ?? title ?? (selectOptions ? undefined : value || undefined);
+  const cellEditCls = `px-0 py-0 border-r border-b border-sheet-border bg-sheet-edit text-center align-middle ${className}`;
+
+  if (editing && inputType === "date") {
+    const selectedDate = dateText.trim()
+      ? parseIsoDate(sheetDateToIso(dateText.trim()))
+      : undefined;
+    const defaultMonth = selectedDate ?? dateDefaultMonth ?? new Date();
+
+    return (
+      <td className={cellEditCls}>
+        <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
+          <PopoverAnchor asChild>
+            <input
+              ref={inputRef as React.RefObject<HTMLInputElement>}
+              type="text"
+              inputMode="numeric"
+              placeholder={datePlaceholder}
+              value={dateText}
+              onChange={(e) => setDateText(e.target.value)}
+              onFocus={() => setCalendarOpen(true)}
+              onBlur={() => {
+                window.setTimeout(() => {
+                  if (!calendarOpenRef.current) void commitDateFromText(false);
+                }, 120);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void commitDateFromText(true);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancel();
+                }
+              }}
+              className={DATE_INPUT_CLS}
+            />
+          </PopoverAnchor>
+          <PopoverContent
+            className="z-[100] w-[248px] overflow-hidden rounded-sm border border-neutral-300 bg-white p-0 shadow-[0_4px_16px_rgba(0,0,0,0.18)]"
+            align="start"
+            side="top"
+            sideOffset={2}
+            collisionPadding={12}
+            onOpenAutoFocus={(e) => e.preventDefault()}
+          >
+            <SheetDatePicker
+              selected={selectedDate}
+              defaultMonth={defaultMonth}
+              onSelect={(d) => {
+                if (!d) return;
+                void commitDate(d, true);
+              }}
+              onClear={() => {
+                setDateText("");
+                setCalendarOpen(false);
+                window.setTimeout(() => inputRef.current?.focus(), 0);
+              }}
+              onToday={() => void commitDate(new Date())}
+            />
+          </PopoverContent>
+        </Popover>
+      </td>
+    );
+  }
 
   if (editing) {
     return (
-      <td className={`px-0 py-0 border-r border-b border-sheet-border bg-sheet-edit text-center align-middle ${className}`}>
+      <td className={cellEditCls}>
         {selectOptions ? (
           <select
             ref={inputRef as React.RefObject<HTMLSelectElement>}
-            className={`${INPUT_CLS} ${alignCls}`}
+            className={`${INPUT_CLS} ${alignCls} ${isUnsetSelect(draft) ? "text-muted-foreground italic" : ""}`}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={() => window.setTimeout(() => void commit(), 0)}
+            onChange={(e) => void commitSelect(e.target.value)}
+            onBlur={() => {
+              if (selectRequired && isUnsetSelect(draft)) cancel();
+            }}
             onKeyDown={handleKeyDown}
+            autoFocus
           >
-            {selectOptions.map((o) => (
-              <option key={o.value} value={o.value}>
+            {(renderedSelectOptions ?? []).map((o) => (
+              <option key={o.value} value={o.value} disabled={o.value === SELECT_UNSET}>
                 {o.label}
               </option>
             ))}
@@ -185,7 +376,7 @@ export function SheetEditableCell({
                 ? (e) => handleNumericPaste(e, integerOnly, setDraft)
                 : undefined
             }
-            onBlur={() => window.setTimeout(() => void commit(), 0)}
+            onBlur={() => window.setTimeout(() => void commit(false), 0)}
             onKeyDown={handleKeyDown}
           />
         )}
@@ -204,7 +395,7 @@ export function SheetEditableCell({
       onClick={startEdit}
       title={hoverTitle}
     >
-      <SheetCellText>{display ?? (value || "—")}</SheetCellText>
+      <SheetCellText>{display ?? (value || datePlaceholder)}</SheetCellText>
     </td>
   );
 }

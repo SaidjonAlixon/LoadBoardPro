@@ -51,7 +51,29 @@ router.get("/", requireAuth, async (_req, res) => {
     })),
   ]);
 
-  res.json(merged);
+  const lockByWeek = Object.fromEntries(
+    boardWeeks.map((b) => [
+      normalizeWeekStart(b.weekStart),
+      {
+        isLocked: b.isLocked ?? false,
+        scheduledLockAt: b.scheduledLockAt?.toISOString() ?? null,
+        lockedAt: b.lockedAt?.toISOString() ?? null,
+      },
+    ]),
+  );
+
+  res.json(
+    merged.map((w) => {
+      const mon = normalizeWeekStart(w.weekStart);
+      const lock = lockByWeek[mon];
+      return {
+        ...w,
+        isLocked: lock?.isLocked ?? false,
+        scheduledLockAt: lock?.scheduledLockAt ?? null,
+        lockedAt: lock?.lockedAt ?? null,
+      };
+    }),
+  );
 });
 
 // POST /api/board-weeks — open the next calendar week for everyone
