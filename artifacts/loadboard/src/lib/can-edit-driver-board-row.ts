@@ -4,11 +4,9 @@ export function canEditDriverBoardRow(options: {
   sectionDispatcherId: string | null;
   groupByDispatcher: boolean;
 }): boolean {
-  const { editorRole, editorUserId, sectionDispatcherId, groupByDispatcher } = options;
+  const { editorRole, editorUserId } = options;
 
   if (editorRole === "admin") return true;
-  if (editorRole !== "dispatcher" || !editorUserId) return false;
-  if (!groupByDispatcher) return true;
-  if (sectionDispatcherId === null) return false;
-  return sectionDispatcherId === editorUserId;
+  if (editorRole === "dispatcher" && editorUserId) return true;
+  return false;
 }

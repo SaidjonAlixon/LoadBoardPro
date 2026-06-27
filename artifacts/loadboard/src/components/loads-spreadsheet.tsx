@@ -62,6 +62,7 @@ import {
   scaleWidthsToContainer,
   SELECT_COL_INDEX,
 } from "@/components/sheet-column-widths";
+import { spreadsheetLoadHeaders } from "@/lib/load-board-scope";
 import { resolveBrokerIdByName } from "@/lib/resolve-broker";
 import { cn } from "@/lib/utils";
 import { getMondayOfWeek, getThisWeekStart, normalizeWeekStart, toIsoDateLocal, weekEndFromStart, addDays, formatWeekRangeLabel } from "@/lib/date-range";
@@ -69,7 +70,10 @@ import {
   DISPATCHER_REQUIRED_FIELD_LABEL_KEYS,
   getActiveDraftLoadId,
   getDispatcherFieldValidation,
+  getDispatcherLoadMissingFields,
   getNextRequiredDraftField,
+  isDraftDateUnset,
+  isDraftDispatcherUnset,
   getPrimaryPatchField,
   isDraftLoadNumber,
   isLoadDraftInProgress,
@@ -300,6 +304,21 @@ function sortLoadsByOrder(loads: Load[]): Load[] {
     const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
     return aTime - bTime;
   });
+}
+
+function nextSortOrderForDriverGroup(
+  allLoads: Load[],
+  driverId: string | null,
+  weekStart: string,
+): number {
+  const mon = normalizeWeekStart(weekStart);
+  let max = -1;
+  for (const load of allLoads) {
+    if ((load.driverId ?? null) !== driverId) continue;
+    if (normalizeWeekStart(load.weekStart || load.puDate) !== mon) continue;
+    max = Math.max(max, load.sortOrder ?? 0);
+  }
+  return max + 1;
 }
 
 function driverCreatedTime(driver: Load["driver"] | Driver | null | undefined): number {
@@ -750,20 +769,24 @@ export function LoadsSpreadsheet({
   }, [groups]);
 
   const weekLoadsAll = useMemo(() => loadsInWeek(loads, weekStart), [loads, weekStart]);
+  const weekLoadsAllComplete = useMemo(
+    () => weekLoadsAll.filter((l) => !isLoadDraftInProgress(l)),
+    [weekLoadsAll],
+  );
   const fullViewFinancialTotals = useMemo(() => {
-    const totalReimb = sumField(weekLoadsAll, "reimbursement");
-    const totalRate = sumField(weekLoadsAll, "rate");
-    const totalInvoiced = weekLoadsAll.reduce((a, l) => a + (l.invoicedAmount ?? 0), 0);
-    const totalPaid = weekLoadsAll.reduce((a, l) => a + (l.brokerPaid ?? 0), 0);
+    const totalReimb = sumField(weekLoadsAllComplete, "reimbursement");
+    const totalRate = sumField(weekLoadsAllComplete, "rate");
+    const totalInvoiced = weekLoadsAllComplete.reduce((a, l) => a + (l.invoicedAmount ?? 0), 0);
+    const totalPaid = weekLoadsAllComplete.reduce((a, l) => a + (l.brokerPaid ?? 0), 0);
     const totalIr = totalInvoiced - (totalRate + totalReimb);
     const totalBi = totalPaid - totalInvoiced;
     return { totalReimb, totalRate, totalInvoiced, totalPaid, totalIr, totalBi };
-  }, [weekLoadsAll]);
+  }, [weekLoadsAllComplete]);
 
   const canAddLoad = (userRole === "dispatcher" || userRole === "admin") && weekEditable;
   const canReorder =
     userRole === "accounting" || ((userRole === "dispatcher" || userRole === "admin") && weekEditable);
-  const requireDispatcher = false;
+  const requireDispatcher = true;
   const [draftTouchedFields, setDraftTouchedFields] = useState<Map<string, Set<string>>>(new Map());
   const activeDraftLoadId = useMemo(
     () => getActiveDraftLoadId(loads, draftTouchedFields, { requireDispatcher }),
@@ -809,6 +832,16 @@ export function LoadsSpreadsheet({
   useEffect(() => {
     setSelectedLoadIds(new Set());
   }, [weekStart]);
+
+  useEffect(() => {
+    if (!focusCell) return;
+    requestAnimationFrame(() => {
+      const row = containerRef.current?.querySelector(
+        `[data-testid="row-load-${focusCell.loadId}"]`,
+      );
+      row?.scrollIntoView({ block: "nearest", behavior: "instant" });
+    });
+  }, [focusCell?.loadId]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -1089,7 +1122,7 @@ export function LoadsSpreadsheet({
           const draftInProgress = load ? isLoadDraftInProgress({ ...load, ...batch }) : false;
 
           try {
-            const updated = await updateLoad(id, batch);
+            const updated = await updateLoad(id, batch, { headers: spreadsheetLoadHeaders() });
             patchLoadInCache(qc, id, updated, dispatchers);
             scheduleKpiRefresh();
           } catch (err) {
@@ -1131,6 +1164,7 @@ export function LoadsSpreadsheet({
   );
 
   const createMutation = useCreateLoad({
+    request: { headers: spreadsheetLoadHeaders() },
     mutation: {
       onSuccess: () => {
         void qc.invalidateQueries({ queryKey: ["/api/analytics"] });
@@ -1154,7 +1188,14 @@ export function LoadsSpreadsheet({
       if (!ownsLoad(userRole, load, currentUserId)) return;
 
       let patchData = data;
-      if (userRole === "dispatcher" && currentUserId && !load.dispatcherId && !("dispatcherId" in patchData)) {
+      if (
+        userRole === "dispatcher" &&
+        currentUserId &&
+        !load.dispatcherId &&
+        !("dispatcherId" in patchData) &&
+        !isPendingLoadId(id) &&
+        id !== activeDraftLoadId
+      ) {
         patchData = { ...patchData, dispatcherId: currentUserId };
       }
 
@@ -1204,7 +1245,83 @@ export function LoadsSpreadsheet({
       userRole,
       currentUserId,
       requireDispatcher,
+      activeDraftLoadId,
     ],
+  );
+
+  const finalizePendingCreate = useCallback(
+    async (tempId: string) => {
+      const load = findLoadInCache(tempId);
+      if (!load || !isPendingLoadId(tempId)) return;
+
+      const touched = draftTouchedRef.current.get(tempId);
+      const missing = getDispatcherLoadMissingFields(load, touched, { requireDispatcher: true });
+      if (missing.length) {
+        const labels = missing.map((f) => t(DISPATCHER_REQUIRED_FIELD_LABEL_KEYS[f]));
+        toast.error(t("loads.validation.completeRequired", { fields: labels.join(", ") }));
+        return;
+      }
+
+      creatingRowRef.current = true;
+      setCreatingRow(true);
+      try {
+        const created = await createMutation.mutateAsync({
+          data: {
+            loadNumber: load.loadNumber,
+            driverId: load.driverId ?? undefined,
+            dispatcherId: load.dispatcherId ?? undefined,
+            brokerId: load.brokerId ?? undefined,
+            puDate: load.puDate,
+            delDate: load.delDate,
+            originCity: load.originCity,
+            originState: load.originState,
+            destCity: load.destCity,
+            destState: load.destState,
+            mileage: load.mileage,
+            rate: load.rate,
+            status: load.status ?? "Booked",
+            reimbursement: load.reimbursement ?? 0,
+            dispatchNotes: load.dispatchNotes ?? undefined,
+            weekStart: load.weekStart,
+          },
+        });
+
+        pendingCreatePatchesRef.current.delete(tempId);
+        replaceLoadInCache(qc, tempId, created, dispatchers);
+
+        const nextTouched = new Map(draftTouchedRef.current);
+        nextTouched.delete(tempId);
+        draftTouchedRef.current = nextTouched;
+        startTransition(() => setDraftTouchedFields(nextTouched));
+        setFocusCell(null);
+        scheduleKpiRefresh();
+      } catch {
+        toast.error(t("loads.createFailed"));
+      } finally {
+        creatingRowRef.current = false;
+        setCreatingRow(false);
+      }
+    },
+    [findLoadInCache, createMutation, dispatchers, qc, scheduleKpiRefresh, t],
+  );
+
+  const showDraftIncompleteAlert = useCallback(
+    (draftId: string) => {
+      const draft = findLoadInCache(draftId);
+      if (!draft) {
+        toast.error(t("loads.validation.finishDraftFirst"));
+        return;
+      }
+      const touched = draftTouchedFields.get(draftId);
+      const missing = getDispatcherLoadMissingFields(draft, touched, { requireDispatcher: true });
+      if (!missing.length) {
+        toast.error(t("loads.validation.selectDispatcherToCreate"));
+        return;
+      }
+      const labels = missing.map((f) => t(DISPATCHER_REQUIRED_FIELD_LABEL_KEYS[f]));
+      toast.error(t("loads.validation.completeRequired", { fields: labels.join(", ") }));
+    },
+    [draftTouchedFields, findLoadInCache, t],
   );
 
   const draftCellNav = useCallback(
@@ -1221,6 +1338,9 @@ export function LoadsSpreadsheet({
                 afterField: field,
                 requireDispatcher,
               });
+              if (next === "dispatcherId") {
+                toast.message(t("loads.validation.selectDispatcherToCreate"));
+              }
               setFocusCell(next ? { loadId: load.id, field: next } : null);
             }
           : undefined,
@@ -1232,32 +1352,28 @@ export function LoadsSpreadsheet({
   const addRowForDriver = useCallback(
     (driverId: string | null) => {
       if (creatingRowRef.current || activeDraftLoadId) {
-        if (activeDraftLoadId) toast.error(t("loads.validation.finishDraftFirst"));
+        if (activeDraftLoadId) showDraftIncompleteAlert(activeDraftLoadId);
         return;
       }
       creatingRowRef.current = true;
       setCreatingRow(true);
 
-      const today = toIsoDateLocal(new Date());
-      const weekEnd = weekEndFromStart(weekStart);
-      const defaultDate = today >= weekStart && today <= weekEnd ? today : weekStart;
       const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
       const tempId = `pending-${suffix}`;
       const loadNumber = `NEW-${suffix}`;
-      const dispatcherId =
-        userRole === "dispatcher" && currentUserId ? currentUserId : null;
       const driver = driverId ? drivers.find((d) => d.id === driverId) : undefined;
-      const dispatcher = dispatcherId ? dispatchers.find((d) => d.id === dispatcherId) : undefined;
+      const nextSortOrder = nextSortOrderForDriverGroup(loads, driverId, weekStart);
 
       const optimisticLoad: Load = {
         id: tempId,
         loadNumber,
         driverId,
         driver,
-        dispatcherId,
-        dispatcher,
-        puDate: defaultDate,
-        delDate: defaultDate,
+        dispatcherId: null,
+        dispatcher: undefined,
+        createdById: currentUserId ?? null,
+        puDate: "",
+        delDate: "",
         originCity: "-",
         originState: "AK",
         destCity: "-",
@@ -1267,6 +1383,7 @@ export function LoadsSpreadsheet({
         status: "Booked",
         reimbursement: 0,
         weekStart,
+        sortOrder: nextSortOrder,
         createdAt: new Date().toISOString(),
       };
 
@@ -1285,95 +1402,16 @@ export function LoadsSpreadsheet({
 
       creatingRowRef.current = false;
       setCreatingRow(false);
-
-      const createData = {
-        loadNumber,
-        driverId,
-        dispatcherId: dispatcherId ?? undefined,
-        puDate: defaultDate,
-        delDate: defaultDate,
-        originCity: "-",
-        originState: "AK",
-        destCity: "-",
-        destState: "AK",
-        mileage: 0,
-        rate: 0,
-        status: "Booked" as LoadStatus,
-        reimbursement: 0,
-        weekStart,
-      };
-
-      void (async () => {
-        try {
-          const created = await createMutation.mutateAsync({ data: createData });
-          const queued = pendingCreatePatchesRef.current.get(tempId) ?? [];
-          pendingCreatePatchesRef.current.delete(tempId);
-          const mergedPatch = queued.reduce<LoadUpdate>((acc, p) => ({ ...acc, ...p }), {});
-
-          const optimisticFinal: Load = recomputeLoadDerivedFields({
-            ...created,
-            ...mergedPatch,
-          });
-          replaceLoadInCache(qc, tempId, optimisticFinal, dispatchers);
-
-          const focused = focusCellRef.current;
-          if (focused?.loadId === tempId) {
-            setFocusCell({ loadId: created.id, field: focused.field });
-          }
-
-          const touched = draftTouchedRef.current.get(tempId);
-          if (touched?.size) {
-            const nextTouched = new Map(draftTouchedRef.current);
-            nextTouched.delete(tempId);
-            nextTouched.set(created.id, touched);
-            draftTouchedRef.current = nextTouched;
-            startTransition(() => setDraftTouchedFields(nextTouched));
-          }
-
-          const apiPending = pendingApiPatchesRef.current.get(tempId);
-          if (apiPending) {
-            pendingApiPatchesRef.current.delete(tempId);
-            pendingApiPatchesRef.current.set(created.id, {
-              ...(pendingApiPatchesRef.current.get(created.id) ?? {}),
-              ...apiPending,
-            });
-          }
-
-          if (Object.keys(mergedPatch).length > 0) {
-            pendingApiPatchesRef.current.set(created.id, {
-              ...(pendingApiPatchesRef.current.get(created.id) ?? {}),
-              ...mergedPatch,
-            });
-          }
-
-          if (pendingApiPatchesRef.current.has(created.id)) {
-            scheduleApiPatchFlush(created.id, 0);
-          } else {
-            scheduleKpiRefresh();
-          }
-        } catch {
-          pendingCreatePatchesRef.current.delete(tempId);
-          pendingApiPatchesRef.current.delete(tempId);
-          removeLoadFromCache(qc, tempId);
-          const focused = focusCellRef.current;
-          if (focused?.loadId === tempId) setFocusCell(null);
-          toast.error(t("loads.createFailed"));
-        }
-      })();
     },
     [
       activeDraftLoadId,
-      createMutation,
-      t,
+      showDraftIncompleteAlert,
       weekStart,
       persistHiddenDrivers,
-      userRole,
       currentUserId,
       drivers,
-      dispatchers,
+      loads,
       qc,
-      scheduleApiPatchFlush,
-      scheduleKpiRefresh,
     ],
   );
 
@@ -1959,6 +1997,19 @@ export function LoadsSpreadsheet({
     );
   };
 
+  const activeDraftLoad = useMemo(
+    () => (activeDraftLoadId ? loads.find((l) => l.id === activeDraftLoadId) ?? null : null),
+    [loads, activeDraftLoadId],
+  );
+
+  const draftMissingLabels = useMemo(() => {
+    if (!activeDraftLoad) return [];
+    const touched = draftTouchedFields.get(activeDraftLoad.id);
+    return getDispatcherLoadMissingFields(activeDraftLoad, touched, { requireDispatcher: true }).map((f) =>
+      t(DISPATCHER_REQUIRED_FIELD_LABEL_KEYS[f]),
+    );
+  }, [activeDraftLoad, draftTouchedFields, t]);
+
   return (
     <div className="relative flex flex-col min-h-0 h-full">
       <div className="flex shrink-0 flex-col border-b border-border/60 bg-muted/25 backdrop-blur-sm">
@@ -2074,6 +2125,20 @@ export function LoadsSpreadsheet({
           })}
         </div>
       )}
+      {activeDraftLoad && draftMissingLabels.length > 0 && (
+        <div
+          className="shrink-0 flex items-center gap-2 border-b border-amber-300/80 bg-amber-50 px-3 py-2 text-xs text-amber-950 dark:border-amber-800/60 dark:bg-amber-950/50 dark:text-amber-100"
+          role="alert"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+          <span>
+            {t("loads.validation.draftFillBanner", {
+              row: rowNumberByLoadId.get(activeDraftLoad.id) ?? "—",
+              fields: draftMissingLabels.join(", "),
+            })}
+          </span>
+        </div>
+      )}
       <div
         ref={containerRef}
         className={`loads-sheet-scroll relative flex-1 min-h-0 w-full rounded-t-lg ${
@@ -2160,18 +2225,19 @@ export function LoadsSpreadsheet({
         ) : (
           groups.map((group, gi) => {
             const weekLoads = loadsInWeek(group.loads, weekStart);
+            const weekLoadsForTotals = weekLoads.filter((l) => !isLoadDraftInProgress(l));
             const rowCount = weekLoads.length;
             const dataRows = Math.max(rowCount, 1);
             const rowSpan = dataRows;
-            const totalMileage = sumField(weekLoads, "mileage");
-            const totalRate = sumField(weekLoads, "rate");
-            const totalReimb = sumField(weekLoads, "reimbursement");
-            const totalInvoiced = weekLoads.reduce((a, l) => a + (l.invoicedAmount ?? 0), 0);
-            const totalPaid = weekLoads.reduce((a, l) => a + (l.brokerPaid ?? 0), 0);
+            const totalMileage = sumField(weekLoadsForTotals, "mileage");
+            const totalRate = sumField(weekLoadsForTotals, "rate");
+            const totalReimb = sumField(weekLoadsForTotals, "reimbursement");
+            const totalInvoiced = weekLoadsForTotals.reduce((a, l) => a + (l.invoicedAmount ?? 0), 0);
+            const totalPaid = weekLoadsForTotals.reduce((a, l) => a + (l.brokerPaid ?? 0), 0);
             const totalIr = totalInvoiced - (totalRate + totalReimb);
             const totalBi = totalPaid - totalInvoiced;
             const avgRpm = totalMileage > 0 ? totalRate / totalMileage : null;
-            const hasFinancialTotals = weekLoads.some(
+            const hasFinancialTotals = weekLoadsForTotals.some(
               (l) => l.invoicedAmount != null || l.brokerPaid != null,
             );
             const canManageDriverGroup = userRole === "admin" || userRole === "dispatcher";
@@ -2285,6 +2351,7 @@ export function LoadsSpreadsheet({
                   weekLoads.map((load, li) => {
                     const touched = draftTouchedFields.get(load.id);
                     const isDraftRow = load.id === activeDraftLoadId;
+                    const isIncompleteRow = isLoadDraftInProgress(load);
                     const isLockedRow = !!activeDraftLoadId && !isDraftRow;
                     const isSelected = selectedLoadIds.has(load.id);
                     return (
@@ -2293,7 +2360,11 @@ export function LoadsSpreadsheet({
                       className={`${li % 2 === 1 ? "sheet-row-alt" : ""} ${
                         isLoadDispatcherLocked(load.status) ? "sheet-row-locked" : ""
                       } ${isLockedRow ? "opacity-45" : ""} ${
-                        isDraftRow ? "ring-2 ring-inset ring-accent/40" : ""
+                        isIncompleteRow
+                          ? "[&>td]:!bg-red-100/90 dark:[&>td]:!bg-red-950/55 [&>td]:ring-1 [&>td]:ring-inset [&>td]:ring-red-500/50"
+                          : ""
+                      } ${
+                        isDraftRow && !isIncompleteRow ? "ring-2 ring-inset ring-accent/40" : ""
                       } ${
                         dropTargetId === load.id ? "ring-2 ring-inset ring-accent/60" : ""
                       } ${draggingLoadId === load.id ? "opacity-50" : ""} ${
@@ -2389,12 +2460,12 @@ export function LoadsSpreadsheet({
                           <SheetEditableCell
                             editable={canEditField(userRole, "puDate", load, activeDraftLoadId, currentUserId, weekEditable)}
                             value={
-                              isNewLoad(load) && !touched?.has("puDate")
+                              isDraftDateUnset(load, "puDate", touched)
                                 ? ""
                                 : load.puDate.split("T")[0]
                             }
                             display={
-                              isNewLoad(load) && !touched?.has("puDate")
+                              isDraftDateUnset(load, "puDate", touched)
                                 ? t("loads.pickDate")
                                 : formatSheetDate(load.puDate)
                             }
@@ -2438,17 +2509,17 @@ export function LoadsSpreadsheet({
                           <SheetEditableCell
                             editable={canEditField(userRole, "delDate", load, activeDraftLoadId, currentUserId, weekEditable)}
                             value={
-                              isNewLoad(load) && !touched?.has("delDate")
+                              isDraftDateUnset(load, "delDate", touched)
                                 ? ""
                                 : load.delDate.split("T")[0]
                             }
                             display={
-                              isNewLoad(load) && !touched?.has("delDate")
-                                ? t("loads.pickDate")
+                              isDraftDateUnset(load, "delDate", touched)
+                                ? t("loads.pickDelDate")
                                 : formatSheetDate(load.delDate)
                             }
                             inputType="date"
-                            datePlaceholder={t("loads.pickDate")}
+                            datePlaceholder={t("loads.pickDelDate")}
                             dateDefaultMonth={weekDefaultMonth}
                             validationState={cellValidation(load, "delDate", activeDraftLoadId, touched)}
                             {...draftCellNav(load, "delDate")}
@@ -2562,19 +2633,42 @@ export function LoadsSpreadsheet({
                           canEditField(userRole, "dispatcherId", load, activeDraftLoadId, currentUserId, weekEditable)
                           && dispatcherOptions.length > 0
                         }
-                        value={load.dispatcherId ?? defaultDispatcherId}
-                        defaultValue={defaultDispatcherId}
+                        value={
+                          load.id === activeDraftLoadId && isDraftDispatcherUnset(load, touched)
+                            ? null
+                            : load.dispatcherId
+                        }
+                        defaultValue={load.id === activeDraftLoadId ? null : defaultDispatcherId}
+                        suppressAutoAssign={load.id === activeDraftLoadId}
+                        autoFocus={
+                          load.id === activeDraftLoadId &&
+                          focusCell?.loadId === load.id &&
+                          focusCell?.field === "dispatcherId"
+                        }
+                        autoOpen={
+                          load.id === activeDraftLoadId &&
+                          focusCell?.loadId === load.id &&
+                          focusCell?.field === "dispatcherId"
+                        }
                         label={
-                          load.dispatcherId || defaultDispatcherId
-                            ? dispatcherLabel(load.dispatcherId ?? defaultDispatcherId)
+                          load.dispatcherId && !isDraftDispatcherUnset(load, touched)
+                            ? dispatcherLabel(load.dispatcherId)
                             : t("common.emDash")
                         }
-                        placeholder={t("loads.allDispatchers")}
+                        placeholder={
+                          load.id === activeDraftLoadId
+                            ? t("loads.pickDispatcher")
+                            : t("loads.allDispatchers")
+                        }
                         options={dispatcherOptions}
                         className={wide ? "px-2.5 py-1.5" : ""}
+                        validationState={cellValidation(load, "dispatcherId", activeDraftLoadId, touched)}
                         onSave={async (v) => {
                           if (!v) return;
                           await patchLoad(load.id, { dispatcherId: v });
+                          if (isPendingLoadId(load.id)) {
+                            await finalizePendingCreate(load.id);
+                          }
                         }}
                       />
                       <SheetEditableCell
@@ -2625,7 +2719,6 @@ export function LoadsSpreadsheet({
                         selectOptions={statusOptions}
                         className={wide ? "px-2.5 py-1.5" : ""}
                         validationState={cellValidation(load, "status", activeDraftLoadId, touched)}
-                        {...draftCellNav(load, "status")}
                         onSave={async (v) =>
                           patchLoad(load.id, { status: v as LoadUpdate["status"] })
                         }

@@ -31,10 +31,8 @@ import { toast } from "sonner";
 import {
   buildDashboardFilterParams,
   formatWeekRangeLabel,
-  getMondayOfWeek,
   getThisWeekStart,
   normalizeWeekStart,
-  toIsoDateLocal,
 } from "@/lib/date-range";
 import {
   exportDashboardExcel,
@@ -72,8 +70,16 @@ export default function Dashboard() {
   const [driverScope, setDriverScope] = useState<DriversTodayScope>("company");
 
   const statusboardWeek = useMemo(
-    () => getMondayOfWeek(toIsoDateLocal(now)),
-    [now.getFullYear(), now.getMonth(), now.getDate()],
+    () => normalizeWeekStart(selectedWeeks[0] ?? getThisWeekStart()),
+    [selectedWeeks],
+  );
+
+  const statusboardWeekStarts = useMemo(
+    () => {
+      const weeks = [...new Set(selectedWeeks.map(normalizeWeekStart).filter(Boolean))].sort();
+      return weeks.length > 1 ? weeks.join(",") : undefined;
+    },
+    [selectedWeeks],
   );
 
   const { data: me } = useGetMe({});
@@ -121,11 +127,13 @@ export default function Dashboard() {
       todayScope ?? "company",
       todayDispatcherId ?? "all",
       statusboardWeek,
+      statusboardWeekStarts ?? "single",
     ],
     queryFn: () => fetchDriversToday({
       scope: todayScope,
       dispatcherId: todayDispatcherId,
       weekStart: statusboardWeek,
+      weekStarts: statusboardWeekStarts,
     }),
     refetchInterval: autoRefresh ? AUTO_REFRESH_SEC * 1000 : false,
   });
@@ -146,8 +154,7 @@ export default function Dashboard() {
   );
 
   const groupStatusboardByDispatcher =
-    (isDispatcher && driverScope === "company") ||
-    (!isDispatcher && !todayDispatcherId);
+    todayScope === "company" && !todayDispatcherId;
 
   const driverStatusCounts = useMemo(
     () => (driversToday ? countDriversByStatus(driversToday.allDrivers) : null),
@@ -275,6 +282,7 @@ export default function Dashboard() {
           scope: todayScope,
           dispatcherId: todayDispatcherId,
           weekStart: statusboardWeek,
+          weekStarts: statusboardWeekStarts,
         }),
       ]);
       const driversScopeLabel = isDispatcher
@@ -424,12 +432,12 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-5">
         <div>
-          <h1 className="text-2xl font-bold text-foreground" data-testid="dashboard-title">
+          <h1 className="text-3xl sm:text-4xl font-bold text-foreground tracking-tight" data-testid="dashboard-title">
             {t("dashboard.title")}
           </h1>
-          <p className="text-sm text-muted-foreground mt-1">
+          <p className="text-base sm:text-lg text-muted-foreground mt-2">
             {isDispatcher ? t("dashboard.subtitleDispatcher") : t("dashboard.subtitleCompany")}
           </p>
         </div>

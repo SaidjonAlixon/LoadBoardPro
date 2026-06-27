@@ -2,7 +2,6 @@ import { Router } from "express";
 import { db, driversTable, loadsTable, usersTable } from "@workspace/db";
 import { eq, desc, and, sql, gte, lte, isNull } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/requireAuth";
-import { dispatcherOwnsDriver } from "../lib/driver-ownership";
 import { isLoadDispatcherLocked } from "../lib/load-statuses";
 import { getThisWeekStart, normalizeWeekStart, weekEndFromStart } from "../lib/week-calendar";
 
@@ -151,23 +150,6 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: "No fields to update" });
     return;
-  }
-
-  const boardFields = new Set([
-    "boardStatus", "boardNote", "prebook", "odometer", "eta", "currentLocation",
-  ]);
-  const profileFields = new Set([
-    "fullName", "driverType", "phone", "email", "truckNumber",
-  ]);
-  const touchesBoard = Object.keys(updates).some((k) => boardFields.has(k));
-  const touchesProfile = Object.keys(updates).some((k) => profileFields.has(k));
-
-  if (req.userRole === "dispatcher" && req.userId && (touchesBoard || touchesProfile)) {
-    const owns = await dispatcherOwnsDriver(req.userId, req.params.id);
-    if (!owns) {
-      res.status(403).json({ error: "You can only update your own drivers" });
-      return;
-    }
   }
 
   try {

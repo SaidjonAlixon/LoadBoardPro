@@ -9,6 +9,7 @@ import weeklyRouter from "./weekly";
 import boardWeeksRouter from "./board-weeks";
 import notificationsRouter from "./notifications";
 import weekLocksRouter from "./week-locks";
+import statusBoardLoadsRouter from "./status-board-loads";
 
 const router: IRouter = Router();
 
@@ -22,5 +23,6 @@ router.use("/weekly", weeklyRouter);
 router.use("/board-weeks", boardWeeksRouter);
 router.use("/notifications", notificationsRouter);
 router.use("/week-locks", weekLocksRouter);
+router.use("/status-board/loads", statusBoardLoadsRouter);
 
 export default router;

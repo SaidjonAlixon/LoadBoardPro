@@ -1,7 +1,9 @@
-import { db, loadsTable, driversTable, usersTable, brokersTable } from "@workspace/db";
+import { db, loadsTable, driversTable, usersTable, brokersTable, statusBoardLoadOverridesTable } from "@workspace/db";
 import { eq, and, inArray, isNull, sql, asc } from "drizzle-orm";
 import { applyWeekPeriodFilters, parseWeekStartsParam } from "./period-filters";
 import { getThisWeekStart, normalizeWeekStart, weekEndFromStart } from "./week-calendar";
+import { isLoadVisibleToViewer } from "./load-visibility";
+import { applyStatusBoardLoadOverride } from "./status-board-load-overrides";
 
 export const ON_LOAD_STATUSES = ["Booked", "InQM", "NeedRevRC", "Issue", "PickedUp"] as const;
 
@@ -104,6 +106,9 @@ function mapLoadInner(
     biDiff: load.biDiff != null ? Number(load.biDiff) : null,
     dispatcher: load.dispatcherId ? dispMap[load.dispatcherId] ?? null : null,
     broker: load.brokerId ? brokerMap[load.brokerId] ?? null : null,
+    statusBoardOnly: load.statusBoardOnly,
+    sortOrder: load.sortOrder,
+    createdAt: load.createdAt?.toISOString?.() ?? load.createdAt ?? null,
   };
 }
 
@@ -149,25 +154,24 @@ async function buildDispatcherGroups(
     const drivers = allDrivers
       .filter((b) => pool.has(b.driver.id))
       .map((b) => blockLoadsForDispatcher(b, dispatcher.id))
-      .filter((b) => b.loads.length > 0);
-    if (!drivers.length) continue;
+      .sort((a, b) => a.driver.fullName.localeCompare(b.driver.fullName));
     drivers.forEach((b) => assigned.add(b.driver.id));
     groups.push({
       dispatcherId: dispatcher.id,
       dispatcherName: dispatcher.name || dispatcher.email || dispatcher.nickname || "Dispatcher",
-      drivers: drivers.sort((a, b) => a.driver.fullName.localeCompare(b.driver.fullName)),
+      drivers,
     });
   }
 
   const unassigned = allDrivers
     .filter((b) => !assigned.has(b.driver.id))
     .map((b) => blockLoadsForDispatcher(b, null))
-    .filter((b) => b.loads.length > 0);
+    .sort((a, b) => a.driver.fullName.localeCompare(b.driver.fullName));
   if (unassigned.length) {
     groups.push({
       dispatcherId: null,
       dispatcherName: "Unassigned",
-      drivers: unassigned.sort((a, b) => a.driver.fullName.localeCompare(b.driver.fullName)),
+      drivers: unassigned,
     });
   }
 
@@ -179,6 +183,8 @@ export async function getDriversTodayStatus(options?: {
   dispatcherId?: string;
   weekStart?: string;
   weekStarts?: string;
+  viewerUserId?: string | null;
+  viewerRole?: string | null;
 }) {
   const scope = options?.scope ?? (options?.dispatcherId ? "mine" : "company");
   const dispatcherId = scope === "mine" ? options?.dispatcherId : undefined;
@@ -233,14 +239,37 @@ export async function getDriversTodayStatus(options?: {
   const dispMap = Object.fromEntries(dispatchers.map((d) => [d.id, d]));
   const brokerMap = Object.fromEntries(brokers.map((b) => [b.id, b]));
 
+  const overrideRows =
+    weekLoads.length > 0
+      ? await db
+          .select()
+          .from(statusBoardLoadOverridesTable)
+          .where(
+            inArray(
+              statusBoardLoadOverridesTable.loadId,
+              weekLoads.map((l) => l.id),
+            ),
+          )
+      : [];
+  const overrideMap = Object.fromEntries(overrideRows.map((o) => [o.loadId, o]));
+
   const mapLoad = (load: (typeof weekLoads)[number]) =>
     mapLoadInner(load, dispMap, brokerMap);
 
   const loadsByDriver = new Map<string, typeof weekLoads>();
   for (const load of weekLoads) {
     if (!load.driverId) continue;
+    if (
+      !isLoadVisibleToViewer(load, options?.viewerUserId, options?.viewerRole, {
+        includeStatusBoard: true,
+      })
+    ) {
+      continue;
+    }
+    const merged = applyStatusBoardLoadOverride(load, overrideMap[load.id]);
+    if (!merged) continue;
     const list = loadsByDriver.get(load.driverId) ?? [];
-    list.push(load);
+    list.push(merged);
     loadsByDriver.set(load.driverId, list);
   }
 

@@ -13,6 +13,12 @@ import {
   isLoadDraftInProgress,
 } from "../lib/validate-load";
 import { denyIfDispatcherLockedWeek } from "../lib/week-lock-access";
+import {
+  isLoadsSpreadsheetLoad,
+  enforceLoadBoardPatchScope,
+  LOAD_BOARD_SCOPE_HEADER,
+} from "../lib/load-board-scope";
+import { loadsSpreadsheetVisibilityFilter, filterDbLoadsForViewer } from "../lib/load-visibility";
 
 const router = Router();
 
@@ -57,6 +63,7 @@ function serializeLoad(
     driver: extras?.driver ? serializeDriver(extras.driver) : undefined,
     dispatcherId: l.dispatcherId,
     dispatcher: extras?.dispatcher ? serializeUser(extras.dispatcher) : undefined,
+    createdById: l.createdById,
     brokerId: l.brokerId,
     broker: extras?.broker ? serializeBroker(extras.broker) : undefined,
     puDate: l.puDate,
@@ -78,6 +85,7 @@ function serializeLoad(
     notes: l.notes,
     weekStart: l.weekStart,
     sortOrder: l.sortOrder,
+    statusBoardOnly: l.statusBoardOnly,
     irDiff,
     biDiff,
     createdAt: l.createdAt,
@@ -102,7 +110,11 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
     dateFrom, dateTo, search, page = "1", limit = "50"
   } = req.query as Record<string, string>;
 
-  const conditions = [eq(loadsTable.isDeleted, false)];
+  const conditions = [
+    eq(loadsTable.isDeleted, false),
+    isLoadsSpreadsheetLoad(),
+    loadsSpreadsheetVisibilityFilter(req.userId, req.userRole),
+  ];
 
   if (status) conditions.push(eq(loadsTable.status, status as any));
   if (driverId) conditions.push(eq(loadsTable.driverId, driverId));
@@ -146,10 +158,12 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
 
   const total = countResult[0]?.count ?? 0;
 
+  const visibleLoads = filterDbLoadsForViewer(loads, req.userId, req.userRole);
+
   // Fetch related entities
-  const driverIds = [...new Set(loads.map(l => l.driverId).filter(Boolean))] as string[];
-  const dispatcherIds = [...new Set(loads.map(l => l.dispatcherId).filter(Boolean))] as string[];
-  const brokerIds = [...new Set(loads.map(l => l.brokerId).filter(Boolean))] as string[];
+  const driverIds = [...new Set(visibleLoads.map(l => l.driverId).filter(Boolean))] as string[];
+  const dispatcherIds = [...new Set(visibleLoads.map(l => l.dispatcherId).filter(Boolean))] as string[];
+  const brokerIds = [...new Set(visibleLoads.map(l => l.brokerId).filter(Boolean))] as string[];
 
   const [drivers, dispatchers, brokers] = await Promise.all([
     driverIds.length ? db.select().from(driversTable).where(inArray(driversTable.id, driverIds)) : [],
@@ -162,12 +176,12 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
   const brokerMap = Object.fromEntries(brokers.map(b => [b.id, b]));
 
   res.json({
-    data: loads.map(l => serializeLoad(l, {
+    data: visibleLoads.map(l => serializeLoad(l, {
       driver: l.driverId ? driverMap[l.driverId] : null,
       dispatcher: l.dispatcherId ? dispatcherMap[l.dispatcherId] : null,
       broker: l.brokerId ? brokerMap[l.brokerId] : null,
     })),
-    total,
+    total: visibleLoads.length < loads.length ? visibleLoads.length : total,
     page: pageNum,
     limit: limitNum,
   });
@@ -178,7 +192,7 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
   const {
     loadNumber, driverId, dispatcherId, brokerId,
     puDate, delDate, originCity, originState, destCity, destState,
-    mileage, rate, status, reimbursement, dispatchNotes, notes, weekStart
+    mileage, rate, status, reimbursement, dispatchNotes, notes, weekStart, statusBoardOnly,
   } = req.body;
 
   const driverKey = driverId ?? null;
@@ -201,6 +215,10 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
   const resolvedDispatcherId =
     dispatcherId
     ?? (req.userRole === "dispatcher" ? req.userId : null);
+
+  const markStatusBoardOnly =
+    statusBoardOnly === true
+    && (req.userRole === "dispatcher" || req.userRole === "admin");
 
   const isDispatcherRole = req.userRole === "dispatcher" || req.userRole === "admin";
   if (isDispatcherRole && !isDraftLoadNumberValue(loadNumber)) {
@@ -248,6 +266,8 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
     notes: notes ?? null,
     weekStart: resolvedWeekStart,
     sortOrder: Number(maxRow?.max ?? -1) + 1,
+    statusBoardOnly: markStatusBoardOnly,
+    createdById: req.userId ?? null,
   }).returning();
 
   res.status(201).json(serializeLoad(load));
@@ -363,6 +383,15 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
   if (
     await denyIfDispatcherLockedWeek(targetWeekStart, req.userId, req.userRole, res)
   ) {
+    return;
+  }
+
+  if (!enforceLoadBoardPatchScope(load, req.get(LOAD_BOARD_SCOPE_HEADER), res)) {
+    return;
+  }
+
+  if ("statusBoardOnly" in req.body) {
+    res.status(400).json({ error: "Cannot change load board scope" });
     return;
   }
 
@@ -593,6 +622,9 @@ router.delete("/:id", requireAuth, requireRole("admin", "dispatcher", "accountin
   });
   if (!load) {
     res.status(404).json({ error: "Not found" });
+    return;
+  }
+  if (!enforceLoadBoardPatchScope(load, req.get(LOAD_BOARD_SCOPE_HEADER), res)) {
     return;
   }
   if (req.userRole === "dispatcher" && isLoadDispatcherLocked(load.status)) {

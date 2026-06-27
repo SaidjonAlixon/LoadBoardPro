@@ -5,6 +5,8 @@ import { requireAuth, type AuthRequest } from "../middlewares/requireAuth";
 import { getDriversTodayStatus, ON_LOAD_STATUSES } from "../lib/driver-status-today";
 import { mergeWeekBuckets, normalizeWeekStart, weekEndFromStart } from "../lib/week-calendar";
 import { applyWeekPeriodFilters } from "../lib/period-filters";
+import { isLoadsSpreadsheetLoad } from "../lib/load-board-scope";
+import { loadsSpreadsheetCompleteOnlyFilter } from "../lib/load-visibility";
 
 const router = Router();
 
@@ -16,7 +18,11 @@ router.get("/kpi", requireAuth, async (req: AuthRequest, res) => {
   const isDispatcher = req.userRole === "dispatcher" && req.userId;
   const scopedDispatcherId = isDispatcher ? req.userId! : dispatcherId;
 
-  const conditions = [eq(loadsTable.isDeleted, false)];
+  const conditions = [
+    eq(loadsTable.isDeleted, false),
+    isLoadsSpreadsheetLoad(),
+    loadsSpreadsheetCompleteOnlyFilter(),
+  ];
   applyWeekPeriodFilters(conditions, { dateFrom, dateTo, weekStart, weekStarts });
   if (scopedDispatcherId) conditions.push(eq(loadsTable.dispatcherId, scopedDispatcherId));
   if (driverId) conditions.push(eq(loadsTable.driverId, driverId));
@@ -42,6 +48,8 @@ router.get("/kpi", requireAuth, async (req: AuthRequest, res) => {
   if (isDispatcher || scopedDispatcherId) {
     const poolConditions = [
       eq(loadsTable.isDeleted, false),
+      isLoadsSpreadsheetLoad(),
+      loadsSpreadsheetCompleteOnlyFilter(),
       eq(loadsTable.dispatcherId, scopedDispatcherId!),
       sql`${loadsTable.driverId} is not null`,
     ];
@@ -65,6 +73,8 @@ router.get("/kpi", requireAuth, async (req: AuthRequest, res) => {
 
   const onLoadConditions = [
     eq(loadsTable.isDeleted, false),
+    isLoadsSpreadsheetLoad(),
+    loadsSpreadsheetCompleteOnlyFilter(),
     inArray(loadsTable.status, [...ON_LOAD_STATUSES]),
     sql`${loadsTable.driverId} is not null`,
   ];
@@ -113,6 +123,8 @@ router.get("/ranking", requireAuth, async (req: AuthRequest, res) => {
 
   const conditions = [
     eq(loadsTable.isDeleted, false),
+    isLoadsSpreadsheetLoad(),
+    loadsSpreadsheetCompleteOnlyFilter(),
     ne(loadsTable.status, "Canceled"),
     sql`${loadsTable.dispatcherId} is not null`,
   ];
@@ -175,7 +187,11 @@ router.get("/status-breakdown", requireAuth, async (req: AuthRequest, res) => {
   const isDispatcher = req.userRole === "dispatcher" && req.userId;
   const scopedDispatcherId = isDispatcher ? req.userId! : dispatcherId;
 
-  const conditions = [eq(loadsTable.isDeleted, false)];
+  const conditions = [
+    eq(loadsTable.isDeleted, false),
+    isLoadsSpreadsheetLoad(),
+    loadsSpreadsheetCompleteOnlyFilter(),
+  ];
   applyWeekPeriodFilters(conditions, { dateFrom, dateTo, weekStart, weekStarts });
   if (scopedDispatcherId) conditions.push(eq(loadsTable.dispatcherId, scopedDispatcherId));
 
@@ -203,6 +219,8 @@ router.get("/drivers-today", requireAuth, async (req: AuthRequest, res) => {
       dispatcherId: effectiveScope === "mine" ? req.userId! : undefined,
       weekStart: req.query.weekStart as string | undefined,
       weekStarts: req.query.weekStarts as string | undefined,
+      viewerUserId: req.userId,
+      viewerRole: req.userRole,
     });
     res.json(result);
     return;
@@ -214,6 +232,8 @@ router.get("/drivers-today", requireAuth, async (req: AuthRequest, res) => {
       : { scope: "company" as const }),
     weekStart: req.query.weekStart as string | undefined,
     weekStarts: req.query.weekStarts as string | undefined,
+    viewerUserId: req.userId,
+    viewerRole: req.userRole,
   });
   res.json(result);
 });

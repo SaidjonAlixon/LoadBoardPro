@@ -14,6 +14,7 @@ import {
 } from "@/lib/driver-board-status";
 import { useI18n } from "@/lib/i18n";
 import { invalidateDriverQueries } from "@/lib/invalidate-driver-queries";
+import { statusBoardLoadHeaders } from "@/lib/load-board-scope";
 import { canEditDriverBoardRow } from "@/lib/can-edit-driver-board-row";
 import { QuickAddDriverDialog } from "@/components/quick-add-driver-dialog";
 import { DriverSearchSelect, MODERN_ADD_BTN } from "@/components/driver-search-select";
@@ -29,6 +30,11 @@ import {
   formatScheduledDateTime,
   toDatetimeLocalValue,
 } from "@/lib/scheduled-datetime";
+import { formatWeekRangeLabel } from "@/lib/date-range";
+import {
+  buildStatusBoardSectionRows,
+  isStatusBoardNewLoad,
+} from "@/lib/status-board-new-load";
 import { toast } from "sonner";
 
 const DRIVER_TYPE_KEYS: Record<string, string> = {
@@ -43,17 +49,36 @@ const DRIVER_TYPE_STYLES: Record<string, string> = {
   Lease: "bg-purple-100 text-purple-800 border border-purple-200 dark:bg-purple-950/50 dark:text-purple-200 dark:border-purple-800",
 };
 
-function resolveBoardLoad(
+function loadsForSection(
   block: DriverTodayBlock,
   sectionDispatcherId: string | null,
   groupByDispatcher: boolean,
-) {
-  if (!block.loads.length) return undefined;
-  if (!groupByDispatcher) return block.loads[0];
-  if (sectionDispatcherId === null) {
-    return block.loads.find((l) => !l.dispatcherId) ?? block.loads[0];
+): Array<DriverTodayBlock["loads"][number] | null> {
+  if (!block.loads.length) return [null];
+
+  let scoped = block.loads;
+  if (groupByDispatcher) {
+    scoped =
+      sectionDispatcherId === null
+        ? block.loads.filter((l) => !l.dispatcherId)
+        : block.loads.filter((l) => l.dispatcherId === sectionDispatcherId);
+    if (!scoped.length) return [null];
   }
-  return block.loads.find((l) => l.dispatcherId === sectionDispatcherId) ?? block.loads[0];
+
+  return [...scoped].sort((a, b) => {
+    const aDate = a.puDate ?? "";
+    const bDate = b.puDate ?? "";
+    if (aDate !== bDate) return aDate.localeCompare(bDate);
+    return (a.loadNumber ?? "").localeCompare(b.loadNumber ?? "");
+  });
+}
+
+function isStatusBoardOwnedLoad(load: { statusBoardOnly?: boolean | null }): boolean {
+  return load.statusBoardOnly === true;
+}
+
+function driverInputKey(driverId: string, field: string, value: unknown): string {
+  return `${driverId}:${field}:${String(value ?? "")}`;
 }
 
 const MODERN_ADD_ICON = "h-2.5 w-2.5 stroke-[3]";
@@ -170,25 +195,30 @@ export function DriverStatusboard({
   );
 
   const patchLoad = useCallback(
-    async (loadId: string, body: Record<string, unknown>) => {
-      setSavingKey(`load:${loadId}`);
+    async (
+      load: { id: string; statusBoardOnly?: boolean | null },
+      body: Record<string, unknown>,
+    ) => {
+      const owned = isStatusBoardOwnedLoad(load);
+      setSavingKey(`load:${load.id}`);
       try {
-        const res = await fetch(`/api/loads/${loadId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify(body),
-        });
+        const res = await fetch(
+          owned ? `/api/loads/${load.id}` : `/api/status-board/loads/${load.id}`,
+          {
+            method: "PATCH",
+            headers: owned
+              ? { "Content-Type": "application/json", ...statusBoardLoadHeaders() }
+              : { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify(body),
+          },
+        );
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           const message = (err as { error?: string }).error ?? "save failed";
           throw new Error(message);
         }
-        await Promise.all([
-          invalidateDriverQueries(qc),
-          qc.invalidateQueries({ queryKey: ["/api/loads"] }),
-          qc.invalidateQueries({ queryKey: ["/api/analytics"] }),
-        ]);
+        void invalidateDriverQueries(qc);
         return true;
       } catch (e) {
         const message = e instanceof Error ? e.message : t("statusboard.loadSaveFailed");
@@ -209,12 +239,10 @@ export function DriverStatusboard({
     ) => {
       try {
         const dispatcherId =
-          editorRole === "dispatcher"
-            ? editorUserId
-            : sectionDispatcherId;
+          sectionDispatcherId ?? (editorRole === "dispatcher" ? editorUserId : null);
         const res = await fetch("/api/loads", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...statusBoardLoadHeaders() },
           credentials: "include",
           body: JSON.stringify({
             loadNumber: `NEW-${crypto.randomUUID().slice(0, 8)}`,
@@ -230,21 +258,18 @@ export function DriverStatusboard({
             mileage: 1,
             rate: 1,
             status: "Booked",
+            statusBoardOnly: true,
           }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           throw new Error((err as { error?: string }).error ?? "create failed");
         }
-        const created = (await res.json()) as { id: string };
+        const created = (await res.json()) as { id: string; statusBoardOnly?: boolean };
         if (loadNumber.trim()) {
-          return patchLoad(created.id, { loadNumber });
+          return patchLoad({ id: created.id, statusBoardOnly: true }, { loadNumber });
         }
-        await Promise.all([
-          invalidateDriverQueries(qc),
-          qc.invalidateQueries({ queryKey: ["/api/loads"] }),
-          qc.invalidateQueries({ queryKey: ["/api/analytics"] }),
-        ]);
+        void invalidateDriverQueries(qc);
         return true;
       } catch {
         toast.error(t("statusboard.loadSaveFailed"));
@@ -293,7 +318,7 @@ export function DriverStatusboard({
       try {
         const res = await fetch(`/api/loads/${loadId}`, {
           method: "PATCH",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...statusBoardLoadHeaders() },
           credentials: "include",
           body: JSON.stringify({ driverId }),
         });
@@ -301,11 +326,7 @@ export function DriverStatusboard({
           const err = await res.json().catch(() => ({}));
           throw new Error((err as { error?: string }).error ?? "save failed");
         }
-        await Promise.all([
-          invalidateDriverQueries(qc),
-          qc.invalidateQueries({ queryKey: ["/api/loads"] }),
-          qc.invalidateQueries({ queryKey: ["/api/analytics"] }),
-        ]);
+        void invalidateDriverQueries(qc);
       } catch (e) {
         const message = e instanceof Error ? e.message : t("statusboard.driverSwapFailed");
         if (message === "No valid fields to update") {
@@ -323,25 +344,33 @@ export function DriverStatusboard({
   );
 
   const deleteLoadRow = useCallback(
-    async (load: { id: string; loadNumber?: string | null }) => {
+    async (load: { id: string; loadNumber?: string | null; statusBoardOnly?: boolean | null }) => {
       const label = load.loadNumber?.trim() || load.id.slice(0, 8);
-      if (!window.confirm(t("loads.sheet.deleteRowConfirm", { loadNumber: label }))) return;
+      const fromLoads = !isStatusBoardOwnedLoad(load);
+      const confirmKey = fromLoads
+        ? "statusboard.hideSpreadsheetLoadConfirm"
+        : "loads.sheet.deleteRowConfirm";
+      if (!window.confirm(t(confirmKey, { loadNumber: label }))) return;
       setSavingKey(`load:${load.id}`);
       try {
-        const res = await fetch(`/api/loads/${load.id}`, {
-          method: "DELETE",
-          credentials: "include",
-        });
+        const res = await fetch(
+          fromLoads ? `/api/status-board/loads/${load.id}` : `/api/loads/${load.id}`,
+          {
+            method: "DELETE",
+            credentials: "include",
+            headers: fromLoads ? undefined : statusBoardLoadHeaders(),
+          },
+        );
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           throw new Error((err as { error?: string }).error ?? "delete failed");
         }
-        await Promise.all([
-          invalidateDriverQueries(qc),
-          qc.invalidateQueries({ queryKey: ["/api/loads"] }),
-          qc.invalidateQueries({ queryKey: ["/api/analytics"] }),
-        ]);
-        toast.success(t("loads.sheet.deleteRowSuccess"));
+        void invalidateDriverQueries(qc);
+        toast.success(
+          fromLoads
+            ? t("statusboard.hideSpreadsheetLoadSuccess")
+            : t("loads.sheet.deleteRowSuccess"),
+        );
       } catch (e) {
         const message = e instanceof Error ? e.message : t("loads.sheet.deleteRowFailed");
         toast.error(message === "delete failed" ? t("loads.sheet.deleteRowFailed") : message);
@@ -384,7 +413,18 @@ export function DriverStatusboard({
     return sections;
   }, [draftSectionKey, draftSectionDispatcherId, groupByDispatcher, groups, resolveFlatDispatcherId, sections]);
 
-  const totalRows = displaySections.reduce((n, s) => n + s.drivers.length, 0);
+  const countSectionRows = useCallback(
+    (section: { dispatcherId: string | null; drivers: DriverTodayBlock[] }) =>
+      buildStatusBoardSectionRows(
+        section.drivers,
+        section.dispatcherId,
+        groupByDispatcher,
+        loadsForSection,
+      ).length,
+    [groupByDispatcher],
+  );
+
+  const totalRows = displaySections.reduce((n, s) => n + countSectionRows(s), 0);
   const showTable = totalRows > 0 || draftSectionKey !== null;
 
   const flatCanAdd =
@@ -411,8 +451,9 @@ export function DriverStatusboard({
   const renderRow = (
     block: DriverTodayBlock,
     section: { dispatcherId: string | null },
+    load: DriverTodayBlock["loads"][number] | null,
+    rowKey: string,
   ) => {
-    const load = resolveBoardLoad(block, section.dispatcherId, groupByDispatcher);
     const d = block.driver;
     const boardStatus = (statusOverrides[d.id]
       ?? resolveDriverBoardStatus(d.boardStatus)) as DriverBoardStatus;
@@ -428,15 +469,13 @@ export function DriverStatusboard({
       !(
         editorRole === "dispatcher" &&
         load.status &&
-        isLoadDispatcherLocked(load.status)
-      ) &&
-      !(
-        editorRole === "dispatcher" &&
-        load.dispatcherId &&
-        editorUserId &&
-        load.dispatcherId !== editorUserId
+        isLoadDispatcherLocked(load.status) &&
+        !isStatusBoardOwnedLoad(load as { statusBoardOnly?: boolean | null })
       );
-    const rowSaving = savingKey === `driver:${d.id}` || (load && savingKey === `load:${load.id}`);
+    const isNewRow = !!load && isStatusBoardNewLoad(load);
+    const rowSaving =
+      savingKey === `driver:${d.id}` ||
+      (!!load && savingKey === `load:${load.id}`);
 
     const loadInputClass = cn(inputCls, "min-w-[72px]");
 
@@ -446,18 +485,21 @@ export function DriverStatusboard({
 
     return (
       <tr
-        key={d.id}
+        key={rowKey}
         className={cn(
           "transition-colors",
-          rowCanEdit
-            ? "hover:bg-muted/50 dark:hover:bg-slate-800/70"
-            : "bg-muted/10 dark:bg-slate-900/40",
+          isNewRow
+            ? "bg-amber-100/90 dark:bg-amber-950/45 hover:bg-amber-100 dark:hover:bg-amber-950/55"
+            : rowCanEdit
+              ? "hover:bg-muted/50 dark:hover:bg-slate-800/70"
+              : "bg-muted/10 dark:bg-slate-900/40",
           rowSaving && "opacity-60",
         )}
       >
         <td className={cn(cell, "tabular-nums whitespace-nowrap min-w-[88px]")} onClick={(e) => e.stopPropagation()}>
           {rowCanEdit ? (
             <input
+              key={driverInputKey(d.id, "truck", d.truckNumber)}
               className={cn(inputCls, "min-w-[72px]")}
               defaultValue={d.truckNumber ?? ""}
               placeholder={t("common.emDash")}
@@ -473,22 +515,9 @@ export function DriverStatusboard({
           )}
         </td>
         <td className={cn(cell, "font-semibold text-foreground min-w-[160px]")} onClick={(e) => e.stopPropagation()}>
-          {rowCanEdit && load && loadCanEdit ? (
-            <DriverSearchSelect
-              value={d.id}
-              drivers={activeDrivers}
-              className="min-w-[150px]"
-              onValueChange={(v) => {
-                if (v === d.id) return;
-                void swapDriverOnLoad(load.id, v);
-              }}
-              onAddClick={() => {
-                setSwapDriverLoadId(load.id);
-                setDriverAddOpen(true);
-              }}
-            />
-          ) : rowCanEdit ? (
+          {rowCanEdit ? (
             <input
+              key={driverInputKey(d.id, "name", d.fullName)}
               className={cn(inputCls, "min-w-[120px] font-semibold")}
               defaultValue={d.fullName}
               onBlur={(e) => {
@@ -505,6 +534,7 @@ export function DriverStatusboard({
         <td className={cn(cell, "tabular-nums whitespace-nowrap")} onClick={(e) => e.stopPropagation()}>
           {rowCanEdit ? (
             <input
+              key={driverInputKey(d.id, "phone", d.phone)}
               className={cn(inputCls, "min-w-[100px]")}
               defaultValue={d.phone ?? ""}
               placeholder={t("common.emDash")}
@@ -552,6 +582,7 @@ export function DriverStatusboard({
         </td>
         <td className={cn(cell, "text-right tabular-nums font-medium")} onClick={(e) => e.stopPropagation()}>
           <input
+            key={driverInputKey(d.id, "odometer", d.odometer)}
             className={cn(inputCls, "min-w-[60px] text-right tabular-nums")}
             defaultValue={d.odometer != null ? String(d.odometer) : ""}
             placeholder={t("common.emDash")}
@@ -599,28 +630,51 @@ export function DriverStatusboard({
         </td>
         <td className={cn(cell, "font-bold whitespace-nowrap min-w-[72px]")} onClick={(e) => e.stopPropagation()}>
           {rowCanEdit ? (
-            <input
-              className={cn(loadInputClass, "font-bold")}
-              defaultValue={load?.loadNumber ?? ""}
-              placeholder={t("common.emDash")}
-              disabled={!!load && !loadCanEdit}
-              onBlur={(e) => {
-                const v = e.target.value.trim();
-                if (load) {
-                  if (!loadCanEdit) return;
-                  if (v === (load.loadNumber ?? "")) return;
-                  if (!v) {
-                    e.target.value = load.loadNumber ?? "";
+            isNewRow && load ? (
+              <div className="flex items-center gap-1.5 min-w-[88px]">
+                <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide bg-amber-500 text-white shadow-sm">
+                  {t("statusboard.newLoadBadge")}
+                </span>
+                <input
+                  key={load.id}
+                  className={cn(loadInputClass, "font-bold min-w-0 flex-1")}
+                  defaultValue={load.loadNumber ?? ""}
+                  placeholder={t("statusboard.newLoadIdPlaceholder")}
+                  onBlur={(e) => {
+                    const v = e.target.value.trim();
+                    if (v === (load.loadNumber ?? "")) return;
+                    if (!v) {
+                      e.target.value = load.loadNumber ?? "";
+                      return;
+                    }
+                    void patchLoad(load, { loadNumber: v });
+                  }}
+                  onKeyDown={blurOnEnter}
+                />
+              </div>
+            ) : (
+              <input
+                className={cn(loadInputClass, "font-bold")}
+                defaultValue={load?.loadNumber ?? ""}
+                placeholder={t("common.emDash")}
+                onBlur={(e) => {
+                  const v = e.target.value.trim();
+                  if (load) {
+                    if (!loadCanEdit) return;
+                    if (v === (load.loadNumber ?? "")) return;
+                    if (!v) {
+                      e.target.value = load.loadNumber ?? "";
+                      return;
+                    }
+                    void patchLoad(load, { loadNumber: v });
                     return;
                   }
-                  void patchLoad(load.id, { loadNumber: v });
-                  return;
-                }
-                if (!v) return;
-                void createLoadForDriver(d.id, v, section.dispatcherId);
-              }}
-              onKeyDown={blurOnEnter}
-            />
+                  if (!v) return;
+                  void createLoadForDriver(d.id, v, section.dispatcherId);
+                }}
+                onKeyDown={blurOnEnter}
+              />
+            )
           ) : load ? (
             load.loadNumber ?? t("common.emDash")
           ) : (
@@ -643,7 +697,7 @@ export function DriverStatusboard({
                     e.target.value = current;
                     return;
                   }
-                  void patchLoad(load.id, {
+                  void patchLoad(load, {
                     originCity: city.trim(),
                     originState: state.trim() || "-",
                   });
@@ -677,7 +731,7 @@ export function DriverStatusboard({
                     e.target.value = current;
                     return;
                   }
-                  void patchLoad(load.id, {
+                  void patchLoad(load, {
                     destCity: city.trim(),
                     destState: state.trim() || "-",
                   });
@@ -709,7 +763,7 @@ export function DriverStatusboard({
                     if (!v) return;
                     const current = toDatetimeLocalValue(load.puScheduledAt, load.puDate);
                     if (v === current) return;
-                    void patchLoad(load.id, {
+                    void patchLoad(load, {
                       puScheduledAt: datetimeLocalToIso(v),
                       puDate: datetimeLocalDatePart(v),
                     });
@@ -725,7 +779,7 @@ export function DriverStatusboard({
                     if (!v) return;
                     const current = toDatetimeLocalValue(load.delScheduledAt, load.delDate);
                     if (v === current) return;
-                    void patchLoad(load.id, {
+                    void patchLoad(load, {
                       delScheduledAt: datetimeLocalToIso(v),
                       delDate: datetimeLocalDatePart(v),
                     });
@@ -751,6 +805,7 @@ export function DriverStatusboard({
           onClick={(e) => e.stopPropagation()}
         >
           <input
+            key={driverInputKey(d.id, "eta", d.eta)}
             className={cn(inputCls, "min-w-[80px]")}
             defaultValue={d.eta ?? ""}
             placeholder={t("common.emDash")}
@@ -766,7 +821,17 @@ export function DriverStatusboard({
           />
         </td>
         <td className={cell} onClick={(e) => e.stopPropagation()}>
-          {rowCanEdit ? (
+          {isNewRow ? (
+            <span
+              className={cn(
+                "inline-flex w-full min-w-[110px] justify-center rounded border px-1.5 py-1 text-xs font-bold uppercase tracking-wide",
+                "bg-amber-500/25 text-amber-900 border-amber-500/60",
+                "dark:bg-amber-500/20 dark:text-amber-100 dark:border-amber-500/50",
+              )}
+            >
+              {t("statusboard.newLoadBadge")}
+            </span>
+          ) : rowCanEdit ? (
             <select
               className={cn(
                 "w-full min-w-[110px] text-xs font-semibold rounded border px-1.5 py-1 cursor-pointer",
@@ -816,6 +881,7 @@ export function DriverStatusboard({
         </td>
         <td className={cell} onClick={(e) => e.stopPropagation()}>
           <input
+            key={driverInputKey(d.id, "prebook", d.prebook)}
             className={cn(inputCls, "min-w-[70px]")}
             defaultValue={d.prebook ?? ""}
             placeholder={t("common.emDash")}
@@ -832,6 +898,7 @@ export function DriverStatusboard({
         </td>
         <td className={cell} onClick={(e) => e.stopPropagation()}>
           <input
+            key={driverInputKey(d.id, "note", d.boardNote)}
             className={cn(inputCls, "min-w-[100px]")}
             defaultValue={d.boardNote ?? ""}
             placeholder={t("common.emDash")}
@@ -847,14 +914,23 @@ export function DriverStatusboard({
           />
         </td>
         <td className={cn(cell, "text-center w-9 p-0")} onClick={(e) => e.stopPropagation()}>
-          {load && loadCanEdit ? (
+          {rowCanEdit ? (
             <button
               type="button"
-              title={t("loads.sheet.deleteRow")}
-              className="inline-flex items-center justify-center w-7 h-7 mx-auto rounded text-red-500 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 transition-colors disabled:opacity-40"
-              disabled={rowSaving}
-              data-testid={`statusboard-delete-row-${load.id}`}
-              onClick={() => void deleteLoadRow(load)}
+              title={
+                load
+                  ? t("loads.sheet.deleteRow")
+                  : t("statusboard.noLoadToDelete")
+              }
+              className={cn(
+                "inline-flex items-center justify-center w-7 h-7 mx-auto rounded transition-colors disabled:opacity-30",
+                load
+                  ? "text-red-500 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400"
+                  : "text-muted-foreground cursor-not-allowed",
+              )}
+              disabled={!load || rowSaving}
+              data-testid={load ? `statusboard-delete-row-${load.id}` : undefined}
+              onClick={() => load && void deleteLoadRow(load)}
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
@@ -865,8 +941,6 @@ export function DriverStatusboard({
   };
 
   const renderDraftRow = (section: DispatcherDriverGroup) => {
-    const sectionDriverIds = new Set(section.drivers.map((b) => b.driver.id));
-    const pickableDrivers = activeDrivers.filter((d: Driver) => !sectionDriverIds.has(d.id));
     const preview = activeDrivers.find((d: Driver) => d.id === draftDriverId);
 
     return (
@@ -881,7 +955,7 @@ export function DriverStatusboard({
         <td className={cn(cell, "min-w-[180px]")} onClick={(e) => e.stopPropagation()}>
           <DriverSearchSelect
             value={draftDriverId}
-            drivers={pickableDrivers}
+            drivers={activeDrivers}
             disabled={addingRow}
             addDisabled={addingRow}
             onValueChange={(v) => {
@@ -939,7 +1013,9 @@ export function DriverStatusboard({
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 py-3 border-b border-border bg-muted/30 dark:bg-slate-900/50">
           <div>
             <p className="text-sm font-semibold text-foreground">{t("statusboard.title")}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">{t("statusboard.subtitle")}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {t("statusboard.subtitle")} · {formatWeekRangeLabel(weekStart, formatDate)}
+            </p>
           </div>
           <div className="flex flex-col sm:items-end gap-2">
             {totalRows > 0 && (
@@ -1013,7 +1089,7 @@ export function DriverStatusboard({
                         <td
                           colSpan={COL_COUNT}
                           className={cn(
-                            "px-3 py-2 text-sm font-bold uppercase tracking-wide sticky top-[41px] z-10",
+                            "px-3 py-2 text-sm font-bold uppercase tracking-wide",
                             "bg-green-100 text-green-900 border border-green-200",
                             "dark:bg-green-950/55 dark:text-green-200 dark:border-green-800",
                           )}
@@ -1048,7 +1124,19 @@ export function DriverStatusboard({
                         </td>
                       </tr>
                     )}
-                    {section.drivers.map((block) => renderRow(block, section))}
+                    {buildStatusBoardSectionRows(
+                      section.drivers,
+                      section.dispatcherId,
+                      groupByDispatcher,
+                      loadsForSection,
+                    ).map(({ block, load }, idx) =>
+                      renderRow(
+                        block,
+                        section,
+                        load,
+                        `${sectionKey(section)}:${block.driver.id}:${load?.id ?? `empty-${idx}`}`,
+                      ),
+                    )}
                     {draftSectionKey === sectionKey(section) && renderDraftRow(section)}
                   </Fragment>
                 ))}

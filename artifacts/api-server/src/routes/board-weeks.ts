@@ -8,6 +8,8 @@ import {
   mergeWeekBuckets,
   normalizeWeekStart,
 } from "../lib/week-calendar";
+import { isLoadsSpreadsheetLoad } from "../lib/load-board-scope";
+import { loadsSpreadsheetCompleteOnlyFilter } from "../lib/load-visibility";
 
 const router = Router();
 
@@ -35,7 +37,11 @@ router.get("/", requireAuth, async (_req, res) => {
       totalGross: sql<number>`coalesce(sum(${loadsTable.rate}::numeric + ${loadsTable.reimbursement}::numeric), 0)`,
     })
     .from(loadsTable)
-    .where(eq(loadsTable.isDeleted, false))
+    .where(and(
+      eq(loadsTable.isDeleted, false),
+      isLoadsSpreadsheetLoad(),
+      loadsSpreadsheetCompleteOnlyFilter(),
+    ))
     .groupBy(loadsTable.weekStart);
 
   const merged = mergeWeekBuckets([

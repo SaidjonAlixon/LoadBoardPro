@@ -144,12 +144,10 @@ export function filterStatusboardSections(
           : dispatcherFilterKey;
       scopedGroups = groups.filter((g) => g.dispatcherId === dispatcherId);
     }
-    return scopedGroups
-      .map((g) => ({
-        ...g,
-        drivers: sortDriversTodayBlocks(applyFilters(g.drivers)),
-      }))
-      .filter((g) => g.drivers.length > 0);
+    return scopedGroups.map((g) => ({
+      ...g,
+      drivers: sortDriversTodayBlocks(applyFilters(g.drivers)),
+    }));
   }
 
   return [

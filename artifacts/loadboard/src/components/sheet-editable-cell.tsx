@@ -596,6 +596,9 @@ interface SheetDispatcherCellProps {
   options: { value: string; label: string }[];
   className?: string;
   validationState?: "valid" | "invalid" | "neutral";
+  autoFocus?: boolean;
+  autoOpen?: boolean;
+  suppressAutoAssign?: boolean;
   onSave: (dispatcherId: string) => Promise<void>;
 }
 
@@ -609,16 +612,34 @@ export function SheetDispatcherCell({
   options,
   className = "",
   validationState = "neutral",
+  autoFocus = false,
+  autoOpen = false,
+  suppressAutoAssign = false,
   onSave,
 }: SheetDispatcherCellProps) {
   const autoAssigned = useRef(false);
-  const effectiveValue = value || defaultValue || "";
+  const selectRef = useRef<HTMLSelectElement>(null);
+  const effectiveValue = suppressAutoAssign ? (value || "") : (value || defaultValue || "");
 
   useEffect(() => {
-    if (autoAssigned.current || !editable || !defaultValue || value) return;
+    if (suppressAutoAssign || autoAssigned.current || !editable || !defaultValue || value) return;
     autoAssigned.current = true;
     void onSave(defaultValue).catch(() => undefined);
-  }, [editable, defaultValue, value, onSave]);
+  }, [editable, defaultValue, value, onSave, suppressAutoAssign]);
+
+  useEffect(() => {
+    if ((!autoFocus && !autoOpen) || !editable) return;
+    const el = selectRef.current;
+    if (!el) return;
+    window.setTimeout(() => {
+      el.focus();
+      try {
+        el.showPicker?.();
+      } catch {
+        el.click();
+      }
+    }, 0);
+  }, [autoFocus, autoOpen, editable]);
 
   const validationCls =
     validationState === "invalid"
@@ -641,6 +662,7 @@ export function SheetDispatcherCell({
   return (
     <td className={`${baseCls} px-0 py-0 ${validationCls}`}>
       <select
+        ref={selectRef}
         className={`${SELECT_CLS} ${!effectiveValue ? "text-muted-foreground italic normal-case tracking-normal font-medium" : ""}`}
         value={effectiveValue}
         title={effectiveValue ? optionLabel : placeholder}

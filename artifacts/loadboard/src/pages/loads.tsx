@@ -41,6 +41,8 @@ import { LoadsSpreadsheet } from "@/components/loads-spreadsheet";
 import type { BoardWeek } from "@/components/loads-week-toolbar";
 import { fetchAllFilteredLoads } from "@/lib/export-dashboard-excel";
 import { filterLoadsBySearch } from "@/lib/filter-loads-search";
+import { filterLoadsForViewer } from "@/lib/filter-loads-for-viewer";
+import { spreadsheetLoadHeaders } from "@/lib/load-board-scope";
 import { exportLoadsBoardExcel, getLoadsBoardExportLabels } from "@/lib/export-loads-excel";
 
 const BOARD_WEEK_KEY = "lb_board_week";
@@ -277,7 +279,7 @@ function AddLoadModal({ open, onClose }: { open: boolean; onClose: () => void })
       const brokerId = await resolveBrokerIdByName(data.brokerName);
       const res = await fetch("/api/loads", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...spreadsheetLoadHeaders() },
         credentials: "include",
         body: JSON.stringify({
           loadNumber: data.loadNumber,
@@ -1021,9 +1023,14 @@ export default function LoadsList() {
     limit: 500,
   });
 
+  const visibleLoads = useMemo(
+    () => filterLoadsForViewer(loadsData?.data ?? [], me?.id),
+    [loadsData?.data, me?.id],
+  );
+
   const displayedLoads = useMemo(
-    () => filterLoadsBySearch(loadsData?.data ?? [], search, driversData ?? []),
-    [loadsData?.data, search, driversData],
+    () => filterLoadsBySearch(visibleLoads, search, driversData ?? []),
+    [visibleLoads, search, driversData],
   );
 
   return (

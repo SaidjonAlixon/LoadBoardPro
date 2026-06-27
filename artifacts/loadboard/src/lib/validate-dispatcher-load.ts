@@ -1,11 +1,12 @@
 import type { Load, LoadUpdate } from "@workspace/api-client-react";
 
-/** Broker, reimbursement, dispatch notes, and dispatcher are optional for dispatchers. */
+/** Optional during row edits; dispatcher is required only when finishing a new load wizard. */
 export const DISPATCHER_OPTIONAL_LOAD_FIELDS = new Set([
   "brokerId",
   "reimbursement",
   "dispatchNotes",
   "dispatcherId",
+  "status",
 ]);
 
 export type DispatcherLoadFieldKey =
@@ -55,18 +56,35 @@ export function isDraftLoadNumber(loadNumber?: string | null): boolean {
 }
 
 export function isDraftDateUnset(
-  load: Pick<Load, "loadNumber">,
+  load: Pick<
+    Load,
+    "loadNumber" | "puDate" | "delDate" | "originCity" | "destCity" | "mileage" | "rate"
+  >,
   field: "puDate" | "delDate",
   touched?: Set<string>,
 ): boolean {
-  return isDispatcherDraftLoad(load) && !touched?.has(field);
+  const dateValue = field === "puDate" ? load.puDate : load.delDate;
+  if (!dateValue?.trim()) return true;
+  if (!touched?.has(field)) {
+    if (isDispatcherDraftLoad(load)) return true;
+    if (isLoadDraftInProgress(load)) return true;
+  }
+  return false;
 }
 
 export function isDraftDispatcherUnset(
-  load: Pick<Load, "loadNumber">,
+  load: Pick<
+    Load,
+    "loadNumber" | "dispatcherId" | "puDate" | "delDate" | "originCity" | "destCity" | "mileage" | "rate"
+  >,
   touched?: Set<string>,
 ): boolean {
-  return isDispatcherDraftLoad(load) && !touched?.has("dispatcherId");
+  if (!load.dispatcherId?.trim()) return true;
+  if (!touched?.has("dispatcherId")) {
+    if (isDispatcherDraftLoad(load)) return true;
+    if (isLoadDraftInProgress(load)) return true;
+  }
+  return false;
 }
 
 export function isDispatcherDraftLoad(load: Pick<Load, "loadNumber">): boolean {
@@ -143,13 +161,13 @@ export function getDispatcherLoadMissingFields(
   const missing: DispatcherLoadFieldKey[] = [];
 
   if (isDraftLoadNumber(load.loadNumber)) missing.push("loadNumber");
-  if (!load.puDate?.trim()) missing.push("puDate");
-  if (!load.delDate?.trim()) missing.push("delDate");
+  if (!load.puDate?.trim() || isDraftDateUnset(load, "puDate", touched)) missing.push("puDate");
+  if (!load.delDate?.trim() || isDraftDateUnset(load, "delDate", touched)) missing.push("delDate");
   if (isPlaceholderCity(load.originCity)) missing.push("originCity");
   if (isPlaceholderCity(load.destCity)) missing.push("destCity");
   if (!load.mileage || Number(load.mileage) <= 0) missing.push("mileage");
   if (load.rate === undefined || load.rate === null || Number(load.rate) <= 0) missing.push("rate");
-  if (!load.status?.trim()) missing.push("status");
+  if (options?.requireDispatcher && isDraftDispatcherUnset(load, touched)) missing.push("dispatcherId");
 
   return missing;
 }
@@ -192,8 +210,12 @@ export function getDispatcherFieldValidation(
   touched?: Set<string>,
   options?: LoadValidationOptions,
 ): "valid" | "invalid" | "neutral" {
-  if (field === "broker" || field === "dispatchNotes" || field === "reimbursement" || field === "dispatcherId") {
+  if (field === "broker" || field === "dispatchNotes" || field === "reimbursement" || field === "status") {
     return "neutral";
+  }
+  if (field === "dispatcherId") {
+    if (!options?.requireDispatcher) return "neutral";
+    return isDraftDispatcherUnset(load, touched) ? "invalid" : "neutral";
   }
 
   const key =
@@ -216,7 +238,7 @@ export const DRAFT_SHEET_FIELD_ORDER: SheetValidationField[] = [
   "dest",
   "mileage",
   "rate",
-  "status",
+  "dispatcherId",
 ];
 
 const ROUTE_DETAIL_FIELDS = new Set<SheetValidationField>(["puDate", "origin", "delDate", "dest"]);
@@ -331,8 +353,10 @@ export function validateDispatcherPatchValue(
       return null;
     }
     case "puDate":
+      if (isDraftDateUnset(merged, "puDate", touched)) return "puDate";
       return merged.puDate?.trim() ? null : "puDate";
     case "delDate":
+      if (isDraftDateUnset(merged, "delDate", touched)) return "delDate";
       return merged.delDate?.trim() ? null : "delDate";
     case "originCity":
     case "originState":
