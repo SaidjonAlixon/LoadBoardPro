@@ -1,6 +1,5 @@
 const en = {
   brand: "LoadBoardPro",
-  language: { en: "English", uz: "O'zbek" },
 
   theme: {
     light: "Light mode",
@@ -823,6 +822,10 @@ const en = {
     pendingTitle: "Edit permission requests",
     pendingDesc: "Approve temporary access or deny the request.",
     requestWeek: "Week",
+    requestDispatcher: "Dispatcher",
+    requestField: "Field to edit",
+    requestDriver: "Driver",
+    requestBroker: "Broker",
     approve1h: "Allow 1 hour",
     approve3h: "Allow 3 hours",
     approveMinutes: "Allow",

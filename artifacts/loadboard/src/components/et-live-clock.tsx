@@ -16,9 +16,9 @@ export function EtLiveClock({
   showLabel = false,
   "data-testid": testId,
 }: EtLiveClockProps) {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
   const [now, setNow] = useState(() => new Date());
-  const intlLocale = locale === "uz" ? "uz-UZ" : "en-US";
+  const intlLocale = "en-US";
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);

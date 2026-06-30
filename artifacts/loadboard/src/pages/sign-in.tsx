@@ -3,7 +3,6 @@ import { useLocation } from "wouter";
 import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
-import { LanguageSwitcher } from "@/components/language-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -68,7 +67,6 @@ export default function SignInPage() {
       <div className="absolute inset-0 bg-primary/60 backdrop-blur-[2px]" aria-hidden />
       <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
         <ThemeToggle />
-        <LanguageSwitcher />
       </div>
       <div className="relative z-10 w-full max-w-md rounded-2xl border border-white/10 bg-card p-8 shadow-xl">
         <div className="mb-6 text-center">

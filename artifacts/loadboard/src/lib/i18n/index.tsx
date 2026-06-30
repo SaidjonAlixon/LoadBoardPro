@@ -4,18 +4,14 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useState,
   type ReactNode,
 } from "react";
 import en from "./en";
-import uz from "./uz";
 import { APP_TIMEZONE, formatInEt, parseDateOnly } from "@workspace/calendar";
 
-export type Locale = "en" | "uz";
+export type Locale = "en";
 
-const STORAGE_KEY = "lb_locale";
-
-const catalogs: Record<Locale, Record<string, unknown>> = { en, uz };
+const INTL_LOCALE = "en-US";
 
 function getNested(obj: Record<string, unknown>, path: string): string | undefined {
   const val = path.split(".").reduce<unknown>((acc, key) => {
@@ -36,7 +32,6 @@ function interpolate(template: string, vars?: Record<string, string | number>): 
 
 interface I18nContextValue {
   locale: Locale;
-  setLocale: (locale: Locale) => void;
   t: (key: string, vars?: Record<string, string | number>) => string;
   formatCurrency: (amount?: number) => string;
   formatDate: (date: string | Date) => string;
@@ -47,51 +42,35 @@ interface I18nContextValue {
 const I18nContext = createContext<I18nContextValue | null>(null);
 
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocaleState] = useState<Locale>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    return saved === "uz" || saved === "en" ? saved : "uz";
-  });
-
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, locale);
-    document.documentElement.lang = locale;
-    document.title = locale === "uz" ? "LoadBoardPro — Yuk boshqaruvi" : "LoadBoardPro — Freight Management";
-  }, [locale]);
+    localStorage.removeItem("lb_locale");
+    document.documentElement.lang = "en";
+    document.title = "LoadBoardPro — Freight Management";
+  }, []);
 
-  const setLocale = useCallback((l: Locale) => setLocaleState(l), []);
-
-  const t = useCallback(
-    (key: string, vars?: Record<string, string | number>) => {
-      const catalog = catalogs[locale] as Record<string, unknown>;
-      const fallback = catalogs.en as Record<string, unknown>;
-      const text = getNested(catalog, key) ?? getNested(fallback, key) ?? key;
-      return interpolate(text, vars);
-    },
-    [locale],
-  );
-
-  const intlLocale = locale === "uz" ? "uz-UZ" : "en-US";
+  const t = useCallback((key: string, vars?: Record<string, string | number>) => {
+    const catalog = en as Record<string, unknown>;
+    const text = getNested(catalog, key) ?? key;
+    return interpolate(text, vars);
+  }, []);
 
   const formatCurrency = useCallback(
     (amount = 0) =>
-      new Intl.NumberFormat(intlLocale, { style: "currency", currency: "USD" }).format(amount),
-    [intlLocale],
+      new Intl.NumberFormat(INTL_LOCALE, { style: "currency", currency: "USD" }).format(amount),
+    [],
   );
 
-  const formatDate = useCallback(
-    (date: string | Date) => {
-      const d =
-        typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)
-          ? parseDateOnly(date)
-          : new Date(date);
-      return new Intl.DateTimeFormat(intlLocale, { timeZone: APP_TIMEZONE }).format(d);
-    },
-    [intlLocale],
-  );
+  const formatDate = useCallback((date: string | Date) => {
+    const d =
+      typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)
+        ? parseDateOnly(date)
+        : new Date(date);
+    return new Intl.DateTimeFormat(INTL_LOCALE, { timeZone: APP_TIMEZONE }).format(d);
+  }, []);
 
   const formatDateTime = useCallback(
     (date: string | Date) =>
-      formatInEt(date, intlLocale, {
+      formatInEt(date, INTL_LOCALE, {
         year: "numeric",
         month: "short",
         day: "numeric",
@@ -99,17 +78,17 @@ export function I18nProvider({ children }: { children: ReactNode }) {
         minute: "2-digit",
         hour12: true,
       }),
-    [intlLocale],
+    [],
   );
 
   const formatNumber = useCallback(
-    (n: number) => new Intl.NumberFormat(intlLocale).format(n),
-    [intlLocale],
+    (n: number) => new Intl.NumberFormat(INTL_LOCALE).format(n),
+    [],
   );
 
   const value = useMemo(
-    () => ({ locale, setLocale, t, formatCurrency, formatDate, formatDateTime, formatNumber }),
-    [locale, setLocale, t, formatCurrency, formatDate, formatDateTime, formatNumber],
+    () => ({ locale: "en" as const, t, formatCurrency, formatDate, formatDateTime, formatNumber }),
+    [t, formatCurrency, formatDate, formatDateTime, formatNumber],
   );
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;

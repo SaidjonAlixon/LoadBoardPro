@@ -65,6 +65,7 @@ import {
 } from "@/components/sheet-column-widths";
 import { spreadsheetLoadHeaders } from "@/lib/load-board-scope";
 import { invalidateDriverQueries } from "@/lib/invalidate-driver-queries";
+import { setLiveSyncPauseReason, useLiveSyncPauseReason, useLiveSyncQueryOptions } from "@/lib/live-sync";
 import { resolveBrokerIdByName } from "@/lib/resolve-broker";
 import { cn } from "@/lib/utils";
 import { getMondayOfWeek, getThisWeekStart, normalizeWeekStart, toIsoDateLocal, weekEndFromStart, addDays, formatWeekRangeLabel } from "@/lib/date-range";
@@ -683,6 +684,7 @@ export function LoadsSpreadsheet({
   const { t, formatCurrency, formatNumber, formatDate, formatDateTime } = useI18n();
   const qc = useQueryClient();
   const monWeek = normalizeWeekStart(weekStart);
+  const liveSync = useLiveSyncQueryOptions();
 
   const { data: weekAccess, refetch: refetchWeekAccess } = useQuery<{
     isLocked: boolean;
@@ -699,20 +701,7 @@ export function LoadsSpreadsheet({
       if (!res.ok) throw new Error("Failed to load week access");
       return res.json();
     },
-    refetchInterval: (query) => {
-      const data = query.state.data;
-      if (!data) return false;
-      if (data.grantExpiresAt) {
-        const grantRem = new Date(data.grantExpiresAt).getTime() - Date.now();
-        if (grantRem <= 0) return 3_000;
-        return 5_000;
-      }
-      if (data.isLocked || !data.scheduledLockAt) return false;
-      const remaining = new Date(data.scheduledLockAt).getTime() - Date.now();
-      if (remaining <= 0) return 3_000;
-      if (remaining <= 120_000) return 10_000;
-      return 30_000;
-    },
+    ...liveSync,
   });
 
   const prevWeekLockedRef = useRef<boolean | undefined>(undefined);
@@ -882,6 +871,25 @@ export function LoadsSpreadsheet({
   const focusCellRef = useRef(focusCell);
   focusCellRef.current = focusCell;
   const addRowBlocked = !!activeDraftLoadId || creatingRow;
+
+  useLiveSyncPauseReason("cell-edit", focusCell !== null);
+  useLiveSyncPauseReason("draft-row", !!activeDraftLoadId || creatingRow);
+  useLiveSyncPauseReason("bulk-action", bulkBusy || bulkDeleteOpen || moveWeekOpen);
+
+  useEffect(() => {
+    const tick = () => {
+      const saving =
+        patchFlushTimersRef.current.size > 0 || patchInflightRef.current.size > 0;
+      setLiveSyncPauseReason("saving", saving);
+    };
+    tick();
+    const id = window.setInterval(tick, 200);
+    return () => {
+      window.clearInterval(id);
+      setLiveSyncPauseReason("saving", false);
+    };
+  }, []);
+
   const [columnWidths, setColumnWidths] = useState<number[] | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);

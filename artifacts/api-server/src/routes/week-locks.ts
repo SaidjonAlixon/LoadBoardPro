@@ -260,9 +260,12 @@ router.post("/requests", requireAuth, requireRole("dispatcher"), async (req: Aut
     .returning();
 
   const requester = await db.query.usersTable.findFirst({ where: eq(usersTable.id, req.userId!) });
-  const name = requester?.name ?? requester?.email ?? "Dispatcher";
+  const name = requester?.name?.trim();
+  const nick = requester?.nickname?.trim();
+  const who =
+    name && nick ? `${name} (@${nick})` : name ?? (nick ? `@${nick}` : requester?.email ?? "Dispatcher");
   await notifyAccountants(
-    `${name} requests edit on Load #${load.loadNumber} (${fieldDescription.trim()}). ${message?.trim() ?? ""}`.trim(),
+    `${who} requests edit on Load #${load.loadNumber} (${fieldDescription.trim()}). ${message?.trim() ?? ""}`.trim(),
     loadId,
   );
 

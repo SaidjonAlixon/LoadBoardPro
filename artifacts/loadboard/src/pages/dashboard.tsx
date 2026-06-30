@@ -64,7 +64,7 @@ async function listDispatchers(): Promise<User[]> {
 }
 
 export default function Dashboard() {
-  const { t, locale, formatCurrency, formatDate, formatNumber } = useI18n();
+  const { t, formatCurrency, formatDate, formatNumber } = useI18n();
   const qc = useQueryClient();
   const [selectedWeeks, setSelectedWeeks] = useState<string[]>(() => [getThisWeekStart()]);
   const [dispatcherFilter, setDispatcherFilter] = useState("all");

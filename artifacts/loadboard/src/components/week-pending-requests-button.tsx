@@ -19,10 +19,39 @@ type PendingRequest = {
   loadId: string;
   weekStart: string;
   requestedBy: string;
+  requesterName: string | null;
+  requesterNickname: string | null;
+  requesterEmail: string | null;
+  loadNumber: string | null;
+  originCity: string | null;
+  destCity: string | null;
+  driverName: string | null;
+  brokerName: string | null;
+  loadStatus: string | null;
   fieldDescription: string;
   message: string | null;
   createdAt: string;
 };
+
+function formatRequesterLabel(r: PendingRequest): string {
+  const name = r.requesterName?.trim();
+  const nick = r.requesterNickname?.trim();
+  if (name && nick) return `${name} (@${nick})`;
+  if (name) return name;
+  if (nick) return `@${nick}`;
+  return r.requesterEmail?.trim() || r.requestedBy;
+}
+
+function formatLoadLabel(r: PendingRequest): string {
+  const num = r.loadNumber?.trim();
+  const from = r.originCity?.trim();
+  const to = r.destCity?.trim();
+  if (num && (from || to)) {
+    return `#${num} — ${from || "?"} → ${to || "?"}`;
+  }
+  if (num) return `#${num}`;
+  return r.loadId.slice(0, 8);
+}
 
 type Props = {
   t: (key: string, vars?: Record<string, string | number>) => string;
@@ -146,11 +175,39 @@ export function WeekPendingRequestsButton({ t }: Props) {
           <div className="space-y-3 py-2">
             {requests.map((r) => (
               <div key={r.id} className="rounded-md border border-border p-3 space-y-2">
-                <p className="text-sm font-medium">{r.fieldDescription}</p>
-                <p className="text-xs text-muted-foreground">
-                  {t("weekLock.requestWeek")}: {r.weekStart} · Load {r.loadId.slice(0, 8)}…
-                </p>
-                {r.message && <p className="text-xs">{r.message}</p>}
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-foreground">
+                    {t("weekLock.requestDispatcher")}:{" "}
+                    <span className="text-primary">{formatRequesterLabel(r)}</span>
+                  </p>
+                  <p className="text-sm">
+                    {t("weekLock.requestLoad")}:{" "}
+                    <span className="font-medium text-primary">{formatLoadLabel(r)}</span>
+                    {r.driverName && (
+                      <span className="text-muted-foreground">
+                        {" "}
+                        · {t("weekLock.requestDriver")}: {r.driverName}
+                      </span>
+                    )}
+                    {r.brokerName && (
+                      <span className="text-muted-foreground">
+                        {" "}
+                        · {t("weekLock.requestBroker")}: {r.brokerName}
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {t("weekLock.requestWeek")}: {r.weekStart}
+                    {r.loadStatus ? ` · ${r.loadStatus}` : ""}
+                  </p>
+                  <p className="text-xs">
+                    <span className="text-muted-foreground">{t("weekLock.requestField")}:</span>{" "}
+                    {r.fieldDescription}
+                  </p>
+                </div>
+                {r.message && (
+                  <p className="text-xs rounded bg-muted/50 px-2 py-1.5">{r.message}</p>
+                )}
                 <div className="flex flex-wrap items-end gap-2 pt-1">
                   <div className="space-y-1">
                     <Label htmlFor={`mins-${r.id}`} className="text-[10px] text-muted-foreground">

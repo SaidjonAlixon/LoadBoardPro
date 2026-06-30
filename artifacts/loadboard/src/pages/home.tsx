@@ -4,7 +4,6 @@ import { BarChart3, TrendingUp, ShieldCheck, ArrowRight } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { LoadBoardProLogo } from "@/components/brand-logo";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { LanguageSwitcher } from "@/components/language-switcher";
 
 export default function Home() {
   const { t } = useI18n();
@@ -20,8 +19,6 @@ export default function Home() {
           <nav className="flex items-center gap-2 sm:gap-3">
             <div className="flex items-center gap-1 sm:gap-1.5 rounded-full border border-white/15 bg-white/5 px-1.5 py-1 sm:px-2">
               <ThemeToggle onDarkPanel />
-              <span className="hidden sm:block h-4 w-px bg-white/15" aria-hidden />
-              <LanguageSwitcher onDarkPanel />
             </div>
 
             <span className="hidden sm:block h-6 w-px bg-white/15" aria-hidden />

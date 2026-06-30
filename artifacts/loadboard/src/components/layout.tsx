@@ -3,7 +3,6 @@ import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
 import { translateRole } from "@/lib/i18n/translate";
-import { LanguageSwitcher } from "@/components/language-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
   LayoutDashboard,
@@ -195,7 +194,6 @@ export default function Layout({ children }: LayoutProps) {
       <div className="p-4 border-t border-white/10 space-y-3 bg-black/10">
         <div className="flex justify-center items-center gap-2">
           <ThemeToggle compact />
-          <LanguageSwitcher compact />
         </div>
         <div className="flex items-center gap-3 rounded-lg bg-white/5 p-2.5 ring-1 ring-white/10">
           <UserAvatar
@@ -275,7 +273,6 @@ export default function Layout({ children }: LayoutProps) {
         </nav>
         <div className="p-4 border-t border-white/10 flex items-center justify-center gap-2">
           <ThemeToggle compact />
-          <LanguageSwitcher compact />
         </div>
       </div>
 
@@ -308,7 +305,6 @@ export default function Layout({ children }: LayoutProps) {
           <div className="flex items-center gap-3">
             <EtLiveClock variant="compact" className="hidden sm:flex mr-1" />
             <ThemeToggle />
-            <LanguageSwitcher />
             <Link
               href="/notifications"
               className="relative p-2 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors"

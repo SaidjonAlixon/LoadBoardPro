@@ -30,18 +30,18 @@ export function WeeklyTradingChart({
   formatValue,
   ariaLabel,
 }: WeeklyTradingChartProps) {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
   const mon = normalizeWeekStart(weekStart);
 
   const dayLabels = useMemo(() => {
-    const fmt = new Intl.DateTimeFormat(locale === "uz" ? "uz-UZ" : "en-US", {
+    const fmt = new Intl.DateTimeFormat("en-US", {
       timeZone: APP_TIMEZONE,
       weekday: compact ? "narrow" : "short",
     });
     return Array.from({ length: 7 }, (_, i) =>
       fmt.format(new Date(`${addDays(mon, i)}T12:00:00`)),
     );
-  }, [mon, locale, compact]);
+  }, [mon, compact]);
 
   const candles = useMemo(() => buildCandles(values), [values]);
   const maxVal = Math.max(1, ...candles.map((c) => c.high));

@@ -6,6 +6,9 @@ import {
   editPermissionRequestsTable,
   usersTable,
   notificationsTable,
+  loadsTable,
+  driversTable,
+  brokersTable,
 } from "@workspace/db";
 import { and, eq, gt, desc } from "drizzle-orm";
 import type { Response } from "express";
@@ -327,9 +330,53 @@ export async function processScheduledAndRolloverLocks(): Promise<void> {
 }
 
 export async function listPendingRequests() {
-  return db
-    .select()
+  const rows = await db
+    .select({
+      id: editPermissionRequestsTable.id,
+      loadId: editPermissionRequestsTable.loadId,
+      weekStart: editPermissionRequestsTable.weekStart,
+      requestedBy: editPermissionRequestsTable.requestedBy,
+      fieldDescription: editPermissionRequestsTable.fieldDescription,
+      message: editPermissionRequestsTable.message,
+      status: editPermissionRequestsTable.status,
+      reviewedBy: editPermissionRequestsTable.reviewedBy,
+      reviewedAt: editPermissionRequestsTable.reviewedAt,
+      grantDurationHours: editPermissionRequestsTable.grantDurationHours,
+      createdAt: editPermissionRequestsTable.createdAt,
+      requesterName: usersTable.name,
+      requesterNickname: usersTable.nickname,
+      requesterEmail: usersTable.email,
+      loadNumber: loadsTable.loadNumber,
+      originCity: loadsTable.originCity,
+      destCity: loadsTable.destCity,
+      driverName: driversTable.fullName,
+      brokerName: brokersTable.name,
+      loadStatus: loadsTable.status,
+    })
     .from(editPermissionRequestsTable)
+    .innerJoin(usersTable, eq(editPermissionRequestsTable.requestedBy, usersTable.id))
+    .leftJoin(loadsTable, eq(editPermissionRequestsTable.loadId, loadsTable.id))
+    .leftJoin(driversTable, eq(loadsTable.driverId, driversTable.id))
+    .leftJoin(brokersTable, eq(loadsTable.brokerId, brokersTable.id))
     .where(eq(editPermissionRequestsTable.status, "pending"))
     .orderBy(desc(editPermissionRequestsTable.createdAt));
+
+  return rows.map((r) => {
+    const name = r.requesterName?.trim() || null;
+    const nickname = r.requesterNickname?.trim() || null;
+    return {
+      ...r,
+      requesterName: name,
+      requesterNickname: nickname,
+      requesterEmail: r.requesterEmail ?? null,
+      loadNumber: r.loadNumber ?? null,
+      originCity: r.originCity ?? null,
+      destCity: r.destCity ?? null,
+      driverName: r.driverName ?? null,
+      brokerName: r.brokerName ?? null,
+      loadStatus: r.loadStatus ?? null,
+      createdAt: r.createdAt.toISOString(),
+      reviewedAt: r.reviewedAt?.toISOString() ?? null,
+    };
+  });
 }

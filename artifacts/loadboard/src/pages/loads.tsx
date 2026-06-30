@@ -44,6 +44,7 @@ import { filterLoadsBySearch } from "@/lib/filter-loads-search";
 import { filterLoadsForViewer } from "@/lib/filter-loads-for-viewer";
 import { spreadsheetLoadHeaders } from "@/lib/load-board-scope";
 import { exportLoadsBoardExcel, getLoadsBoardExportLabels } from "@/lib/export-loads-excel";
+import { useLiveSyncPauseReason, useLiveSyncQueryOptions } from "@/lib/live-sync";
 
 const BOARD_WEEK_KEY = "lb_board_week";
 
@@ -885,6 +886,10 @@ export default function LoadsList() {
     userRole === "admin" || userRole === "accounting" || userRole === "dispatcher";
 
   const weekStart = selectedWeek;
+  const liveSync = useLiveSyncQueryOptions();
+
+  useLiveSyncPauseReason("add-load-dialog", addOpen);
+  useLiveSyncPauseReason("filter-dialog", filterOpen);
 
   const { data: boardWeeks = [] } = useQuery<BoardWeek[]>({
     queryKey: ["/api/board-weeks"],
@@ -893,19 +898,7 @@ export default function LoadsList() {
       if (!res.ok) throw new Error("Failed to load weeks");
       return res.json();
     },
-    refetchInterval: (query) => {
-      const weeks = query.state.data;
-      if (!weeks?.some((w) => w.scheduledLockAt && !w.isLocked)) return false;
-      const soonest = weeks
-        .filter((w) => w.scheduledLockAt && !w.isLocked)
-        .map((w) => new Date(w.scheduledLockAt!).getTime())
-        .sort((a, b) => a - b)[0];
-      if (soonest === undefined) return false;
-      const remaining = soonest - Date.now();
-      if (remaining <= 0) return 3_000;
-      if (remaining <= 120_000) return 10_000;
-      return 30_000;
-    },
+    ...liveSync,
   });
 
   const createWeekMutation = useMutation({
@@ -1007,12 +1000,13 @@ export default function LoadsList() {
     }
   }, [boardWeeks, selectedWeek]);
 
-  const { data: brokersData } = useListBrokers({});
-  const { data: driversData } = useListDrivers({ isActive: true });
+  const { data: brokersData } = useListBrokers({}, { query: liveSync });
+  const { data: driversData } = useListDrivers({ isActive: true }, { query: liveSync });
   const { data: dispatchers } = useQuery({
     queryKey: ["/api/users/dispatchers"],
     queryFn: listDispatchers,
     enabled: Boolean(me?.id),
+    ...liveSync,
   });
 
   const handleExportExcel = useCallback(async () => {
@@ -1080,7 +1074,7 @@ export default function LoadsList() {
     dispatcherId: canFilterDispatchers ? filters.dispatcherId || undefined : undefined,
     weekStart,
     limit: 500,
-  });
+  }, { query: liveSync });
 
   const visibleLoads = useMemo(
     () => filterLoadsForViewer(loadsData?.data ?? [], me?.id),

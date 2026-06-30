@@ -88,8 +88,8 @@ export const SheetDatePicker = forwardRef<SheetDatePickerHandle, SheetDatePicker
     { selected, defaultMonth, onSelect, onClear, onToday, onNavigate },
     ref,
   ) {
-    const { locale, t } = useI18n();
-    const calendarLocale = locale === "uz" ? "uz-UZ" : "en-US";
+    const { t } = useI18n();
+    const calendarLocale = "en-US";
 
     const [focusedDate, setFocusedDate] = useState(() =>
       initialFocusedDate(selected, defaultMonth),
