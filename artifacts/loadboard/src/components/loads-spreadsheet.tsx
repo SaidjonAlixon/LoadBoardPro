@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, startTransition, type ReactNode } from "react";
 import type { Broker, Driver, Load, LoadStatus, LoadUpdate, User } from "@workspace/api-client-react";
-import { useCreateLoad, useDeleteLoad, useGetKpi, updateLoad } from "@workspace/api-client-react";
+import { useCreateLoad, useDeleteLoad, updateLoad } from "@workspace/api-client-react";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { LoadsWeekToolbar, type BoardWeek } from "@/components/loads-week-toolbar";
 import { LoadsBulkActionBar } from "@/components/loads-bulk-action-bar";
@@ -8,6 +8,7 @@ import { LoadsBulkMoveWeekDialog } from "@/components/loads-bulk-move-week-dialo
 import { WeekLockControls } from "@/components/week-lock-controls";
 import { WeekLockedOverlay } from "@/components/week-locked-overlay";
 import { WeekPermissionRequestDialog } from "@/components/week-permission-request-dialog";
+import { WeekGrantCountdown } from "@/components/week-grant-countdown";
 import { WeekPendingRequestsButton } from "@/components/week-pending-requests-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -63,6 +64,7 @@ import {
   SELECT_COL_INDEX,
 } from "@/components/sheet-column-widths";
 import { spreadsheetLoadHeaders } from "@/lib/load-board-scope";
+import { invalidateDriverQueries } from "@/lib/invalidate-driver-queries";
 import { resolveBrokerIdByName } from "@/lib/resolve-broker";
 import { cn } from "@/lib/utils";
 import { getMondayOfWeek, getThisWeekStart, normalizeWeekStart, toIsoDateLocal, weekEndFromStart, addDays, formatWeekRangeLabel } from "@/lib/date-range";
@@ -84,6 +86,10 @@ import {
   type SheetValidationField,
 } from "@/lib/validate-dispatcher-load";
 import { toast } from "sonner";
+import {
+  computeSpreadsheetKpi,
+  filterLoadsForSpreadsheetKpi,
+} from "@/lib/compute-spreadsheet-kpi";
 
 const COL_COUNT_BASE = 17;
 const COL_COUNT_FINANCIAL = 4;
@@ -459,6 +465,7 @@ function patchLoadInCache(
   loadId: string,
   patch: LoadUpdate | Load,
   dispatchers: User[],
+  brokers: Broker[] = [],
 ): void {
   qc.setQueriesData<{ data: Load[] }>({ queryKey: ["/api/loads"] }, (old) => {
     if (!old?.data) return old;
@@ -471,10 +478,25 @@ function patchLoadInCache(
           const d = dispatchers.find((x) => x.id === patch.dispatcherId);
           if (d) next.dispatcher = d;
         }
+        if ("broker" in patch && (patch as Load).broker) {
+          next.broker = (patch as Load).broker;
+        } else if ("brokerId" in patch) {
+          const id = patch.brokerId ?? null;
+          if (id) {
+            next.broker = brokers.find((b) => b.id === id) ?? next.broker;
+          } else {
+            next.broker = undefined;
+          }
+        }
         return next;
       }),
     };
   });
+}
+
+function toApiLoadPatch(data: LoadUpdate & { broker?: Broker }): LoadUpdate {
+  const { broker: _broker, ...apiPatch } = data;
+  return apiPatch;
 }
 
 function isPendingLoadId(id: string): boolean {
@@ -501,6 +523,7 @@ function replaceLoadInCache(
   tempId: string,
   realLoad: Load,
   dispatchers: User[],
+  brokers: Broker[] = [],
 ): void {
   qc.setQueriesData<{ data: Load[] }>({ queryKey: ["/api/loads"] }, (old) => {
     if (!old?.data) return old;
@@ -512,6 +535,11 @@ function replaceLoadInCache(
         if (realLoad.dispatcherId) {
           const d = dispatchers.find((x) => x.id === realLoad.dispatcherId);
           if (d) next.dispatcher = d;
+        }
+        if (realLoad.broker) {
+          next.broker = realLoad.broker;
+        } else if (realLoad.brokerId) {
+          next.broker = brokers.find((b) => b.id === realLoad.brokerId) ?? next.broker;
         }
         return next;
       }),
@@ -611,12 +639,15 @@ interface LoadsSpreadsheetProps {
   onWeekChange?: (weekStart: string) => void;
   onCreateWeek?: () => void;
   creatingWeek?: boolean;
+  onDeleteWeek?: (weekStart: string) => void | Promise<void>;
+  deletingWeek?: boolean;
   onAddLoad?: () => void;
   emptyMessage?: { title: string; subtitle: string; showAdd?: boolean };
   /** When filters/search are active, hide empty driver rows except the selected driver. */
   compactDriverGroups?: boolean;
   searchQuery?: string;
   filterDriverId?: string;
+  filterStatus?: string;
   dispatcherFilterId?: string;
   dispatchers?: User[];
   toolbarLeading?: ReactNode;
@@ -635,29 +666,21 @@ export function LoadsSpreadsheet({
   onWeekChange,
   onCreateWeek,
   creatingWeek = false,
+  onDeleteWeek,
+  deletingWeek = false,
   onAddLoad,
   emptyMessage,
   compactDriverGroups = false,
   searchQuery = "",
   filterDriverId,
+  filterStatus,
   dispatcherFilterId,
   dispatchers = [],
   toolbarLeading,
   toolbarFilterPanel,
 }: LoadsSpreadsheetProps) {
   const weekStart = weekStartProp ?? getThisWeekStart();
-  const kpiParams = useMemo(() => {
-    const mon = normalizeWeekStart(weekStart);
-    return {
-      weekStart: mon,
-      dateFrom: mon,
-      dateTo: weekEndFromStart(mon),
-      ...(dispatcherFilterId ? { dispatcherId: dispatcherFilterId } : {}),
-      ...(filterDriverId ? { driverId: filterDriverId } : {}),
-    };
-  }, [weekStart, dispatcherFilterId, filterDriverId]);
-  const { data: kpi, isLoading: kpiLoading } = useGetKpi(kpiParams);
-  const { t, formatCurrency, formatNumber, formatDate } = useI18n();
+  const { t, formatCurrency, formatNumber, formatDate, formatDateTime } = useI18n();
   const qc = useQueryClient();
   const monWeek = normalizeWeekStart(weekStart);
 
@@ -676,7 +699,30 @@ export function LoadsSpreadsheet({
       if (!res.ok) throw new Error("Failed to load week access");
       return res.json();
     },
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return false;
+      if (data.grantExpiresAt) {
+        const grantRem = new Date(data.grantExpiresAt).getTime() - Date.now();
+        if (grantRem <= 0) return 3_000;
+        return 5_000;
+      }
+      if (data.isLocked || !data.scheduledLockAt) return false;
+      const remaining = new Date(data.scheduledLockAt).getTime() - Date.now();
+      if (remaining <= 0) return 3_000;
+      if (remaining <= 120_000) return 10_000;
+      return 30_000;
+    },
   });
+
+  const prevWeekLockedRef = useRef<boolean | undefined>(undefined);
+  useEffect(() => {
+    const locked = weekAccess?.isLocked ?? false;
+    if (prevWeekLockedRef.current === false && locked) {
+      void qc.invalidateQueries({ queryKey: ["/api/board-weeks"] });
+    }
+    prevWeekLockedRef.current = locked;
+  }, [weekAccess?.isLocked, qc]);
 
   const { data: lockSettings, refetch: refetchLockSettings } = useQuery<{
     autoLockOnWeekRollover: boolean;
@@ -709,6 +755,7 @@ export function LoadsSpreadsheet({
     void refetchWeekAccess();
     void refetchLockSettings();
     void qc.invalidateQueries({ queryKey: ["/api/board-weeks"] });
+    void qc.invalidateQueries({ queryKey: ["/api/week-locks/grants"] });
   }, [qc, refetchLockSettings, refetchWeekAccess]);
 
   const weekEditable = weekEditableForDispatcher;
@@ -745,16 +792,30 @@ export function LoadsSpreadsheet({
     },
     [hiddenStorageKey],
   );
+  const loadsForView = useMemo(() => {
+    let list = loads;
+    if (filterDriverId) {
+      list = list.filter((l) => l.driverId === filterDriverId);
+    }
+    if (dispatcherFilterId) {
+      list = list.filter((l) => l.dispatcherId === dispatcherFilterId);
+    }
+    if (filterStatus) {
+      list = list.filter((l) => l.status === filterStatus);
+    }
+    return list;
+  }, [loads, filterDriverId, dispatcherFilterId, filterStatus]);
+
   const groups = useMemo(
     () =>
-      groupLoadsByDriver(loads, drivers, {
+      groupLoadsByDriver(loadsForView, drivers, {
         compactGroups: compactDriverGroups,
         filterDriverId,
       }).filter((g) => {
         if (searchQuery.trim() && g.loads.length > 0) return true;
         return !g.driverId || !hiddenDriverIds.has(g.driverId);
       }),
-    [loads, drivers, hiddenDriverIds, compactDriverGroups, filterDriverId, searchQuery],
+    [loadsForView, drivers, hiddenDriverIds, compactDriverGroups, filterDriverId, searchQuery],
   );
   const rowNumberByLoadId = useMemo(() => {
     const map = new Map<string, number>();
@@ -768,20 +829,21 @@ export function LoadsSpreadsheet({
     return map;
   }, [groups]);
 
-  const weekLoadsAll = useMemo(() => loadsInWeek(loads, weekStart), [loads, weekStart]);
-  const weekLoadsAllComplete = useMemo(
-    () => weekLoadsAll.filter((l) => !isLoadDraftInProgress(l)),
-    [weekLoadsAll],
+
+  const visibleWeekLoadsComplete = useMemo(
+    () =>
+      filterLoadsForSpreadsheetKpi(loadsForView, {
+        weekStarts: weekStart,
+        hiddenDriverIds,
+        searchActive: !!searchQuery.trim(),
+      }),
+    [loadsForView, weekStart, hiddenDriverIds, searchQuery],
   );
-  const fullViewFinancialTotals = useMemo(() => {
-    const totalReimb = sumField(weekLoadsAllComplete, "reimbursement");
-    const totalRate = sumField(weekLoadsAllComplete, "rate");
-    const totalInvoiced = weekLoadsAllComplete.reduce((a, l) => a + (l.invoicedAmount ?? 0), 0);
-    const totalPaid = weekLoadsAllComplete.reduce((a, l) => a + (l.brokerPaid ?? 0), 0);
-    const totalIr = totalInvoiced - (totalRate + totalReimb);
-    const totalBi = totalPaid - totalInvoiced;
-    return { totalReimb, totalRate, totalInvoiced, totalPaid, totalIr, totalBi };
-  }, [weekLoadsAllComplete]);
+
+  const toolbarKpi = useMemo(
+    () => computeSpreadsheetKpi(visibleWeekLoadsComplete),
+    [visibleWeekLoadsComplete],
+  );
 
   const canAddLoad = (userRole === "dispatcher" || userRole === "admin") && weekEditable;
   const canReorder =
@@ -858,11 +920,11 @@ export function LoadsSpreadsheet({
   const isFullView = canToggleRouteDetails ? showRouteDetails : showFinancial;
 
   const showExtendedToolbarStats =
-    weekLoadsAll.length > 0 &&
+    toolbarKpi.totalLoads > 0 &&
     (userRole === "accounting" || userRole === "admin" || userRole === "dispatcher");
 
   const toolbarStats = useMemo(() => {
-    if ((kpi?.totalLoads ?? 0) === 0) return [];
+    if (toolbarKpi.totalLoads === 0) return [];
     const stats: Array<{
       label: string;
       value: string;
@@ -872,28 +934,28 @@ export function LoadsSpreadsheet({
     }> = [
       {
         label: t("dashboard.totalGross"),
-        value: formatCurrency(kpi?.totalGross ?? 0),
+        value: formatCurrency(toolbarKpi.totalGross),
         icon: DollarSign,
         iconWrapClass: "bg-sky-100 text-sky-600 dark:bg-sky-500/20 dark:text-sky-300",
         labelClass: "text-sky-700 dark:text-sky-300",
       },
       {
         label: t("dashboard.totalMiles"),
-        value: formatNumber(kpi?.totalMiles ?? 0),
+        value: formatNumber(toolbarKpi.totalMiles),
         icon: Route,
         iconWrapClass: "bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-300",
         labelClass: "text-violet-700 dark:text-violet-300",
       },
       {
         label: t("dashboard.avgRpm"),
-        value: formatCurrency(kpi?.avgRpm ?? 0),
+        value: formatCurrency(toolbarKpi.avgRpm),
         icon: TrendingUp,
         iconWrapClass: "bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300",
         labelClass: "text-emerald-700 dark:text-emerald-300",
       },
       {
         label: t("dashboard.grossPerDriver"),
-        value: formatCurrency(kpi?.grossPerDriver ?? 0),
+        value: formatCurrency(toolbarKpi.grossPerDriver),
         icon: Divide,
         iconWrapClass: "bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300",
         labelClass: "text-amber-800 dark:text-amber-300",
@@ -903,8 +965,8 @@ export function LoadsSpreadsheet({
       stats.push(
         {
           label: t("loads.sheet.reimbursement"),
-          value: fullViewFinancialTotals.totalReimb
-            ? formatCurrency(fullViewFinancialTotals.totalReimb)
+          value: toolbarKpi.totalReimb
+            ? formatCurrency(toolbarKpi.totalReimb)
             : t("common.emDash"),
           icon: DollarSign,
           iconWrapClass: "bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300",
@@ -912,21 +974,21 @@ export function LoadsSpreadsheet({
         },
         {
           label: t("loads.sheet.invoicedAmount"),
-          value: formatCurrency(fullViewFinancialTotals.totalInvoiced),
+          value: formatCurrency(toolbarKpi.totalInvoiced),
           icon: DollarSign,
           iconWrapClass: "bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300",
           labelClass: "text-cyan-800 dark:text-cyan-300",
         },
         {
           label: t("loads.sheet.brokerPaid"),
-          value: formatCurrency(fullViewFinancialTotals.totalPaid),
+          value: formatCurrency(toolbarKpi.totalPaid),
           icon: DollarSign,
           iconWrapClass: "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300",
           labelClass: "text-indigo-800 dark:text-indigo-300",
         },
       );
       if (showFinancial) {
-        const { totalIr, totalBi } = fullViewFinancialTotals;
+        const { totalIr, totalBi } = toolbarKpi;
         stats.push(
           {
             label: t("loads.sheet.irDiff"),
@@ -959,14 +1021,9 @@ export function LoadsSpreadsheet({
     }
     return stats;
   }, [
-    kpi?.totalGross,
-    kpi?.totalLoads,
-    kpi?.totalMiles,
-    kpi?.avgRpm,
-    kpi?.grossPerDriver,
+    toolbarKpi,
     showExtendedToolbarStats,
     showFinancial,
-    fullViewFinancialTotals,
     formatCurrency,
     formatNumber,
     t,
@@ -1079,10 +1136,10 @@ export function LoadsSpreadsheet({
   );
 
   const applyOptimisticLoadPatch = useCallback(
-    (loadId: string, data: LoadUpdate) => {
-      patchLoadInCache(qc, loadId, data, dispatchers);
+    (loadId: string, data: LoadUpdate | Load) => {
+      patchLoadInCache(qc, loadId, data, dispatchers, brokers);
     },
-    [qc, dispatchers],
+    [qc, dispatchers, brokers],
   );
 
   const scheduleKpiRefresh = useCallback(() => {
@@ -1123,8 +1180,11 @@ export function LoadsSpreadsheet({
 
           try {
             const updated = await updateLoad(id, batch, { headers: spreadsheetLoadHeaders() });
-            patchLoadInCache(qc, id, updated, dispatchers);
+            patchLoadInCache(qc, id, updated, dispatchers, brokers);
             scheduleKpiRefresh();
+            if ("dispatcherId" in batch) {
+              void invalidateDriverQueries(qc);
+            }
           } catch (err) {
             void qc.invalidateQueries({ queryKey: ["/api/loads"] });
             const apiMsg = readPatchError(err);
@@ -1145,7 +1205,7 @@ export function LoadsSpreadsheet({
         patchInflightRef.current.delete(id);
       }
     },
-    [findLoadInCache, qc, dispatchers, scheduleKpiRefresh, t],
+    [findLoadInCache, qc, dispatchers, brokers, scheduleKpiRefresh, t],
   );
 
   const scheduleApiPatchFlush = useCallback(
@@ -1199,13 +1259,14 @@ export function LoadsSpreadsheet({
         patchData = { ...patchData, dispatcherId: currentUserId };
       }
 
-      const field = getPrimaryPatchField(patchData);
+      const field = getPrimaryPatchField(toApiLoadPatch(patchData as LoadUpdate & { broker?: Broker }));
       const touched = draftTouchedRef.current.get(id);
       const merged = { ...load, ...patchData } as Load;
       const draftInProgress = isLoadDraftInProgress(merged);
+      const apiPatch = toApiLoadPatch(patchData as LoadUpdate & { broker?: Broker });
 
-      if (!draftInProgress && field && shouldValidateDispatcherPatch(userRole, patchData)) {
-        const invalid = validateDispatcherPatchValue(field, patchData, merged, touched, {
+      if (!draftInProgress && field && shouldValidateDispatcherPatch(userRole, apiPatch)) {
+        const invalid = validateDispatcherPatchValue(field, apiPatch, merged, touched, {
           requireDispatcher,
         });
         if (invalid) {
@@ -1227,11 +1288,11 @@ export function LoadsSpreadsheet({
 
       if (isPendingLoadId(id)) {
         const queued = pendingCreatePatchesRef.current.get(id) ?? [];
-        pendingCreatePatchesRef.current.set(id, [...queued, patchData]);
+        pendingCreatePatchesRef.current.set(id, [...queued, apiPatch]);
         return;
       }
 
-      const batched = { ...(pendingApiPatchesRef.current.get(id) ?? {}), ...patchData };
+      const batched = { ...(pendingApiPatchesRef.current.get(id) ?? {}), ...apiPatch };
       pendingApiPatchesRef.current.set(id, batched);
       scheduleApiPatchFlush(id, draftInProgress ? 280 : 40);
     },
@@ -1287,7 +1348,7 @@ export function LoadsSpreadsheet({
         });
 
         pendingCreatePatchesRef.current.delete(tempId);
-        replaceLoadInCache(qc, tempId, created, dispatchers);
+        replaceLoadInCache(qc, tempId, created, dispatchers, brokers);
 
         const nextTouched = new Map(draftTouchedRef.current);
         nextTouched.delete(tempId);
@@ -1302,7 +1363,7 @@ export function LoadsSpreadsheet({
         setCreatingRow(false);
       }
     },
-    [findLoadInCache, createMutation, dispatchers, qc, scheduleKpiRefresh, t],
+    [findLoadInCache, createMutation, dispatchers, brokers, qc, scheduleKpiRefresh, t],
   );
 
   const showDraftIncompleteAlert = useCallback(
@@ -1331,6 +1392,10 @@ export function LoadsSpreadsheet({
         autoEdit: isDraft && focusCell != null && focusCell.loadId === load.id && focusCell.field === field,
         onEnterAdvance: isDraft
           ? () => {
+              if (field === "broker") {
+                setFocusCell({ loadId: load.id, field: "loadNumber" });
+                return;
+              }
               const touched = draftTouchedFields.get(load.id);
               const next = getNextRequiredDraftField(load, {
                 showRouteDetails,
@@ -1388,7 +1453,7 @@ export function LoadsSpreadsheet({
       };
 
       appendLoadToCache(qc, optimisticLoad);
-      setFocusCell({ loadId: tempId, field: "loadNumber" });
+      setFocusCell({ loadId: tempId, field: "broker" });
 
       if (driverId) {
         setHiddenDriverIds((prev) => {
@@ -1446,6 +1511,7 @@ export function LoadsSpreadsheet({
         }
         void qc.invalidateQueries({ queryKey: ["/api/loads"] });
         void qc.invalidateQueries({ queryKey: ["/api/analytics"] });
+        void invalidateDriverQueries(qc);
         toast.success(t("loads.sheet.deleteGroupSuccess"));
       } catch (err) {
         const msg = err instanceof Error ? err.message : "";
@@ -1469,22 +1535,47 @@ export function LoadsSpreadsheet({
     setBulkDeleteOpen(true);
   }, [bulkDeleteIds.length]);
 
+  const removeLocalDraftLoad = useCallback(
+    (id: string) => {
+      if (!isPendingLoadId(id)) return false;
+      removeLoadFromCache(qc, id);
+      pendingCreatePatchesRef.current.delete(id);
+      const flushTimer = patchFlushTimersRef.current.get(id);
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        patchFlushTimersRef.current.delete(id);
+      }
+      pendingApiPatchesRef.current.delete(id);
+      const nextTouched = new Map(draftTouchedRef.current);
+      nextTouched.delete(id);
+      draftTouchedRef.current = nextTouched;
+      startTransition(() => setDraftTouchedFields(nextTouched));
+      if (focusCellRef.current?.loadId === id) {
+        setFocusCell(null);
+      }
+      return true;
+    },
+    [qc],
+  );
+
   const confirmBulkDeleteSelected = useCallback(async () => {
     if (!bulkDeleteIds.length) return;
     setBulkDeleteOpen(false);
     setBulkBusy(true);
     try {
       for (const id of bulkDeleteIds) {
+        if (removeLocalDraftLoad(id)) continue;
         await deleteMutation.mutateAsync({ id });
       }
       setSelectedLoadIds(new Set());
+      scheduleKpiRefresh();
       toast.success(t("loads.sheet.bulkDeleteSuccess"));
     } catch {
       toast.error(t("loads.sheet.bulkDeleteFailed"));
     } finally {
       setBulkBusy(false);
     }
-  }, [bulkDeleteIds, deleteMutation, t]);
+  }, [bulkDeleteIds, deleteMutation, removeLocalDraftLoad, scheduleKpiRefresh, t]);
 
   const bulkMoveToWeek = useCallback(
     async (targetWeekStart: string) => {
@@ -1666,9 +1757,24 @@ export function LoadsSpreadsheet({
 
   const saveBrokerForLoad = useCallback(
     async (loadId: string, name: string) => {
-      const brokerId = await resolveBrokerIdByName(name, brokers);
-      await patchLoad(loadId, { brokerId });
-      void qc.invalidateQueries({ queryKey: ["/api/brokers"] });
+      const trimmed = name.trim();
+      const brokerId = trimmed ? await resolveBrokerIdByName(trimmed, brokers) : null;
+      const broker =
+        brokerId && trimmed
+          ? (brokers.find((b) => b.id === brokerId) ?? {
+              id: brokerId,
+              name: trimmed,
+              mcNumber: null,
+              contact: null,
+              email: null,
+              phone: null,
+              createdAt: new Date().toISOString(),
+            })
+          : undefined;
+      await patchLoad(loadId, { brokerId, ...(broker ? { broker } : {}) } as LoadUpdate & { broker?: Broker });
+      if (trimmed) {
+        void qc.invalidateQueries({ queryKey: ["/api/brokers"] });
+      }
     },
     [brokers, patchLoad, qc],
   );
@@ -2026,9 +2132,12 @@ export function LoadsSpreadsheet({
                 onWeekChange={onWeekChange}
                 onCreateWeek={onCreateWeek}
                 creatingWeek={creatingWeek}
+                onDeleteWeek={onDeleteWeek}
+                deletingWeek={deletingWeek}
                 formatDate={formatDate}
                 t={t}
                 canManageWeeks={userRole === "admin" || userRole === "dispatcher" || userRole === "accounting"}
+                canDeleteWeeks={userRole === "admin"}
               />
             ) : null}
             {(userRole === "accounting" || userRole === "admin") && (
@@ -2091,12 +2200,12 @@ export function LoadsSpreadsheet({
           </div>
         </div>
 
-        {(isLoading || kpiLoading) && (
+        {isLoading && (
           <div className="border-t border-border/40 px-3 py-2.5">
             <Skeleton className="h-14 w-full max-w-3xl rounded-lg" />
           </div>
         )}
-        {!isLoading && !kpiLoading && toolbarStats.length > 0 && (
+        {!isLoading && toolbarStats.length > 0 && (
           <div className="border-t border-border/40 bg-muted/10 px-3 py-2.5">
             <div
               className={`grid w-full gap-2 ${
@@ -2119,10 +2228,15 @@ export function LoadsSpreadsheet({
         ) : null}
       </div>
       {showGrantBanner && weekAccess?.grantExpiresAt && (
-        <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200">
-          {t("weekLock.grantActiveUntil", {
-            time: new Date(weekAccess.grantExpiresAt).toLocaleString(),
-          })}
+        <div
+          className="shrink-0 flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200"
+          role="alert"
+        >
+          <span>{t("weekLock.grantActiveBanner")}</span>
+          <WeekGrantCountdown expiresAt={weekAccess.grantExpiresAt} className="text-amber-950 dark:text-amber-100" />
+          <span className="text-amber-800/80 dark:text-amber-300/80">
+            ({t("weekLock.grantActiveUntil", { time: formatDateTime(weekAccess.grantExpiresAt) })})
+          </span>
         </div>
       )}
       {activeDraftLoad && draftMissingLabels.length > 0 && (
@@ -2428,10 +2542,19 @@ export function LoadsSpreadsheet({
                       <SheetEditableCell
                         editable={canEditField(userRole, "brokerId", load, activeDraftLoadId, currentUserId, weekEditable)}
                         value={load.broker?.name ?? ""}
-                        display={load.broker?.name ?? t("common.emDash")}
+                        display={
+                          load.broker?.name ? (
+                            load.broker.name
+                          ) : load.id === activeDraftLoadId ? (
+                            <span className="text-muted-foreground italic">{t("loads.brokerOptionalPh")}</span>
+                          ) : (
+                            t("common.emDash")
+                          )
+                        }
                         tooltip={load.broker?.name ?? undefined}
                         className={wide ? "px-2.5 py-1.5" : ""}
                         validationState={cellValidation(load, "broker", activeDraftLoadId, touched)}
+                        {...draftCellNav(load, "broker")}
                         onSave={async (v) => saveBrokerForLoad(load.id, v)}
                       />
                       <SheetEditableCell
@@ -2808,7 +2931,7 @@ export function LoadsSpreadsheet({
       loads={loads.filter(
         (l) =>
           normalizeWeekStart(l.weekStart || l.puDate) === monWeek
-          && ownsLoad(userRole, l, currentUserId),
+          && l.dispatcherId === currentUserId,
       )}
       t={t}
       onSubmitted={() => void refetchWeekAccess()}

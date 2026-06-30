@@ -36,19 +36,19 @@ export function LeaderboardRank({ rank }: LeaderboardRankProps) {
     return (
       <span
         className={cn(
-          "inline-flex h-9 w-9 items-center justify-center rounded-full ring-2",
+          "inline-flex h-7 w-7 items-center justify-center rounded-full ring-2",
           badge,
         )}
         aria-label={`Rank ${rank}`}
       >
-        <Icon className={cn("h-[18px] w-[18px]", icon)} strokeWidth={2.25} />
+        <Icon className={cn("h-4 w-4", icon)} strokeWidth={2.25} />
       </span>
     );
   }
 
   return (
     <span
-      className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-muted/70 text-sm font-bold text-muted-foreground tabular-nums ring-1 ring-border"
+      className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-muted/70 text-xs font-bold text-muted-foreground tabular-nums ring-1 ring-border"
       aria-label={`Rank ${rank}`}
     >
       {rank}

@@ -146,7 +146,10 @@ export function filterStatusboardSections(
     }
     return scopedGroups.map((g) => ({
       ...g,
-      drivers: sortDriversTodayBlocks(applyFilters(g.drivers)),
+      drivers:
+        g.dispatcherId === null
+          ? sortUnassignedDriversTodayBlocks(applyFilters(g.drivers))
+          : sortDriversTodayBlocks(applyFilters(g.drivers)),
     }));
   }
 
@@ -200,6 +203,22 @@ export function sortDriversTodayBlocks(blocks: DriverTodayBlock[]): DriverTodayB
     const ao = order.get(resolveDriverBoardStatus(a.driver.boardStatus)) ?? 99;
     const bo = order.get(resolveDriverBoardStatus(b.driver.boardStatus)) ?? 99;
     if (ao !== bo) return ao - bo;
+    return a.driver.fullName.localeCompare(b.driver.fullName);
+  });
+}
+
+/** Unassigned pool — drivers with loads first, then empty drivers oldest→newest at the bottom. */
+export function sortUnassignedDriversTodayBlocks(blocks: DriverTodayBlock[]): DriverTodayBlock[] {
+  return [...blocks].sort((a, b) => {
+    const aEmpty = a.loads.length === 0;
+    const bEmpty = b.loads.length === 0;
+    if (aEmpty !== bEmpty) return aEmpty ? 1 : -1;
+    if (!aEmpty && !bEmpty) {
+      return a.driver.fullName.localeCompare(b.driver.fullName);
+    }
+    const aCreated = a.driver.createdAt ? new Date(a.driver.createdAt).getTime() : 0;
+    const bCreated = b.driver.createdAt ? new Date(b.driver.createdAt).getTime() : 0;
+    if (aCreated !== bCreated) return aCreated - bCreated;
     return a.driver.fullName.localeCompare(b.driver.fullName);
   });
 }

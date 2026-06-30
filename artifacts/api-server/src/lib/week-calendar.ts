@@ -1,111 +1,23 @@
-/** Calendar date helpers — always use local date parts (no UTC day shifts). */
-
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
-export function parseDateOnly(dateStr: string): Date {
-  if (ISO_DATE.test(dateStr)) {
-    const [y, m, d] = dateStr.split("-").map(Number);
-    return new Date(y, m - 1, d, 12, 0, 0, 0);
-  }
-  const d = new Date(dateStr);
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0, 0);
-}
-
-export function toIsoDateLocal(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-export function todayIsoLocal(): string {
-  return toIsoDateLocal(new Date());
-}
-
-export function addDays(dateStr: string, days: number): string {
-  const d = parseDateOnly(dateStr);
-  d.setDate(d.getDate() + days);
-  return toIsoDateLocal(d);
-}
-
-/** Monday of the calendar week containing dateStr (Mon–Sun). */
-export function getMondayOfWeek(dateStr: string): string {
-  if (!dateStr) return "";
-  const d = parseDateOnly(dateStr);
-  if (isNaN(d.getTime())) return dateStr;
-  const day = d.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
-  return toIsoDateLocal(d);
-}
-
-export function normalizeWeekStart(weekStart: string): string {
-  return getMondayOfWeek(weekStart);
-}
-
-export function getThisWeekStart(): string {
-  return getMondayOfWeek(todayIsoLocal());
-}
-
-export function weekEndFromStart(weekStart: string): string {
-  return addDays(normalizeWeekStart(weekStart), 6);
-}
-
-/** Calendar days between two date strings (local). */
-export function weekDayDiff(fromDate: string, toDate: string): number {
-  const from = parseDateOnly(fromDate);
-  const to = parseDateOnly(toDate);
-  return Math.round((to.getTime() - from.getTime()) / 86_400_000);
-}
-
-/** Shift a load's PU/DEL dates into a target calendar week; preserves weekday offset and span. */
-export function computeLoadWeekMoveDates(
-  load: { weekStart: string; puDate: string; delDate: string },
-  targetWeekStart: string,
-): { weekStart: string; puDate: string; delDate: string } {
-  const targetMonday = normalizeWeekStart(targetWeekStart);
-  const puBase = String(load.puDate).split("T")[0];
-  const delBase = String(load.delDate).split("T")[0];
-  const sourceMonday = normalizeWeekStart(load.weekStart || puBase);
-  const puOffset = weekDayDiff(sourceMonday, puBase);
-  const delSpan = Math.max(0, weekDayDiff(puBase, delBase));
-  const newPu = addDays(targetMonday, puOffset);
-  const newDel = addDays(newPu, delSpan);
-  return { weekStart: targetMonday, puDate: newPu, delDate: newDel };
-}
-
-export function isDateInWeek(dateStr: string, weekStartMonday: string): boolean {
-  const mon = normalizeWeekStart(weekStartMonday);
-  const sun = weekEndFromStart(mon);
-  return dateStr >= mon && dateStr <= sun;
-}
-
-export type WeekBucket = {
-  weekStart: string;
-  weekEnd: string;
-  loadCount: number;
-  totalGross: number;
-};
-
-/** Merge rows that belong to the same calendar week (Mon–Sun). */
-export function mergeWeekBuckets(
-  rows: { weekStart: string; loadCount?: number; totalGross?: number }[],
-): WeekBucket[] {
-  const map = new Map<string, WeekBucket>();
-  for (const row of rows) {
-    const mon = normalizeWeekStart(row.weekStart);
-    const existing = map.get(mon);
-    if (existing) {
-      existing.loadCount += row.loadCount ?? 0;
-      existing.totalGross += row.totalGross ?? 0;
-    } else {
-      map.set(mon, {
-        weekStart: mon,
-        weekEnd: weekEndFromStart(mon),
-        loadCount: row.loadCount ?? 0,
-        totalGross: row.totalGross ?? 0,
-      });
-    }
-  }
-  return [...map.values()].sort((a, b) => b.weekStart.localeCompare(a.weekStart));
-}
+/** Re-export shared Eastern Time calendar helpers for the API server. */
+export {
+  APP_TIMEZONE,
+  addDays,
+  computeLoadWeekMoveDates,
+  formatInEt,
+  getEtParts,
+  getEtMonthRange,
+  getMondayOfWeek,
+  getThisWeekStart,
+  instantToIsoDate,
+  isDateInWeek,
+  isSameEtDay,
+  mergeWeekBuckets,
+  normalizeWeekStart,
+  parseDateOnly,
+  todayIsoLocal,
+  toIsoDateLocal,
+  weekDayDiff,
+  weekEndFromStart,
+  etWallTimeToUtc,
+  type WeekBucket,
+} from "@workspace/calendar";

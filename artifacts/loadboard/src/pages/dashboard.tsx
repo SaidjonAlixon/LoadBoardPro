@@ -1,8 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  useGetKpi,
-  useGetDispatcherRanking,
   useGetMe,
   type User,
 } from "@workspace/api-client-react";
@@ -14,15 +12,18 @@ import { DriverStatusChips } from "@/components/driver-status-chips";
 import { DriverStatusboardFilters } from "@/components/driver-status-entity-filter";
 import { DriverStatusboard } from "@/components/driver-statusboard";
 import { LeaderboardRank } from "@/components/leaderboard-rank";
+import { EtLiveClock } from "@/components/et-live-clock";
+import { DispatcherActivityChart } from "@/components/dispatcher-activity-chart";
 import {
   fetchDriversToday,
   countDriversByStatus,
-  emptyStatusCounts,
   buildDriverFilterOptions,
   buildDispatcherFilterOptions,
+  filterStatusboardSections,
   type DriverChipFilter,
   type DriversTodayScope,
 } from "@/lib/drivers-today";
+import { collectStatusboardVisibleDrivers } from "@/lib/status-board-new-load";
 import { DRIVER_BOARD_STATUS_I18N, resolveDriverBoardStatus } from "@/lib/driver-board-status";
 import { DollarSign, Route, TrendingUp, Divide } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
@@ -39,6 +40,14 @@ import {
   fetchAllFilteredLoads,
   getDashboardLoadsExportLabels,
 } from "@/lib/export-dashboard-excel";
+import { filterLoadsForViewer } from "@/lib/filter-loads-for-viewer";
+import {
+  computeSpreadsheetKpi,
+  computeDispatcherRanking,
+  computeDispatcherDailyActivity,
+  computeTopDriversByGross,
+  filterLoadsForSpreadsheetKpi,
+} from "@/lib/compute-spreadsheet-kpi";
 
 const DRIVER_TYPE_EXPORT_KEYS: Record<string, string> = {
   OO: "drivers.ooShort",
@@ -63,7 +72,6 @@ export default function Dashboard() {
   const [refreshCountdown, setRefreshCountdown] = useState(AUTO_REFRESH_SEC);
   const [refreshing, setRefreshing] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [now, setNow] = useState(() => new Date());
   const [driverChipFilter, setDriverChipFilter] = useState<DriverChipFilter>("all");
   const [statusboardDriverFilterId, setStatusboardDriverFilterId] = useState<string | null>(null);
   const [statusboardDispatcherFilterKey, setStatusboardDispatcherFilterKey] = useState<string | null>(null);
@@ -96,8 +104,90 @@ export default function Dashboard() {
     [selectedWeeks, dispatcherFilter, isDispatcher],
   );
 
-  const { data: kpi, isLoading: kpiLoading } = useGetKpi(filterParams);
-  const { data: ranking, isLoading: rankingLoading } = useGetDispatcherRanking(filterParams);
+  const companyWeekLoadsParams = useMemo(
+    () => ({
+      ...(filterParams.weekStarts ? { weekStarts: filterParams.weekStarts } : {}),
+      ...(filterParams.weekStart ? { weekStart: filterParams.weekStart } : {}),
+    }),
+    [filterParams],
+  );
+
+  const scopedKpiLoadsParams = useMemo(
+    () => ({
+      ...companyWeekLoadsParams,
+      ...(isDispatcher && me?.id
+        ? { dispatcherId: me.id }
+        : filterParams.dispatcherId
+          ? { dispatcherId: filterParams.dispatcherId }
+          : {}),
+    }),
+    [companyWeekLoadsParams, filterParams.dispatcherId, isDispatcher, me?.id],
+  );
+
+  const kpiLoadsScoped =
+    Boolean(scopedKpiLoadsParams.dispatcherId);
+
+  const { data: companyLoads, isLoading: companyLoadsLoading } = useQuery({
+    queryKey: ["/api/loads", "dashboard-company", companyWeekLoadsParams],
+    queryFn: () => fetchAllFilteredLoads(companyWeekLoadsParams),
+  });
+
+  const { data: scopedKpiLoads, isLoading: scopedKpiLoadsLoading } = useQuery({
+    queryKey: ["/api/loads", "dashboard-kpi", scopedKpiLoadsParams],
+    queryFn: () => fetchAllFilteredLoads(scopedKpiLoadsParams),
+    enabled: kpiLoadsScoped,
+  });
+
+  const kpiLoads = kpiLoadsScoped ? scopedKpiLoads : companyLoads;
+  const kpiLoadsLoading = companyLoadsLoading || (kpiLoadsScoped && scopedKpiLoadsLoading);
+
+  const { data: dispatchers } = useQuery({
+    queryKey: ["/api/users/dispatchers"],
+    queryFn: listDispatchers,
+  });
+
+  const kpiWeekStarts = useMemo(() => {
+    if (filterParams.weekStarts) {
+      return filterParams.weekStarts.split(",").map(normalizeWeekStart).filter(Boolean);
+    }
+    if (filterParams.weekStart) {
+      return [normalizeWeekStart(filterParams.weekStart)];
+    }
+    return [...new Set(selectedWeeks.map(normalizeWeekStart).filter(Boolean))];
+  }, [filterParams.weekStart, filterParams.weekStarts, selectedWeeks]);
+
+  const leaderboardLoads = useMemo(() => {
+    if (!companyLoads) return [];
+    const visible = filterLoadsForViewer(companyLoads, me?.id);
+    return filterLoadsForSpreadsheetKpi(visible, { weekStarts: kpiWeekStarts });
+  }, [companyLoads, me?.id, kpiWeekStarts]);
+
+  const kpiSourceLoads = useMemo(() => {
+    if (!kpiLoads) return [];
+    const visible = filterLoadsForViewer(kpiLoads, me?.id);
+    return filterLoadsForSpreadsheetKpi(visible, { weekStarts: kpiWeekStarts });
+  }, [kpiLoads, me?.id, kpiWeekStarts]);
+
+  const kpi = useMemo(
+    () => (kpiLoads ? computeSpreadsheetKpi(kpiSourceLoads) : undefined),
+    [kpiLoads, kpiSourceLoads],
+  );
+
+  const ranking = useMemo(() => {
+    if (!dispatchers?.length) return undefined;
+    return computeDispatcherRanking(leaderboardLoads, dispatchers);
+  }, [leaderboardLoads, dispatchers]);
+
+  const leaderboardActivityWeek = normalizeWeekStart(
+    selectedWeeks[0] ?? kpiWeekStarts[0] ?? getThisWeekStart(),
+  );
+
+  const chartWeekLoads = useMemo(() => {
+    if (!companyLoads) return [];
+    const visible = filterLoadsForViewer(companyLoads, me?.id);
+    return filterLoadsForSpreadsheetKpi(visible, { weekStarts: [leaderboardActivityWeek] });
+  }, [companyLoads, me?.id, leaderboardActivityWeek]);
+
   const { data: weeks = [] } = useQuery<{ weekStart: string; loadCount?: number }[]>({
     queryKey: ["/api/board-weeks"],
     queryFn: async () => {
@@ -105,11 +195,6 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Failed to load weeks");
       return res.json();
     },
-  });
-  const { data: dispatchers } = useQuery({
-    queryKey: ["/api/users/dispatchers"],
-    queryFn: listDispatchers,
-    enabled: canFilter,
   });
 
   const todayDispatcherId =
@@ -138,6 +223,15 @@ export default function Dashboard() {
     refetchInterval: autoRefresh ? AUTO_REFRESH_SEC * 1000 : false,
   });
 
+  const topDrivers = useMemo(() => {
+    const driverList =
+      driversToday?.allDrivers.map((b) => ({
+        id: b.driver.id,
+        fullName: b.driver.fullName,
+      })) ?? [];
+    return computeTopDriversByGross(chartWeekLoads, driverList);
+  }, [chartWeekLoads, driversToday]);
+
   const handleDriverChipSelect = (filter: DriverChipFilter) => {
     setDriverChipFilter(filter);
   };
@@ -156,9 +250,31 @@ export default function Dashboard() {
   const groupStatusboardByDispatcher =
     todayScope === "company" && !todayDispatcherId;
 
+  const statusboardSectionsForCounts = useMemo(() => {
+    if (!driversToday) return [];
+    return filterStatusboardSections(
+      driversToday.allDrivers,
+      driversToday.dispatcherGroups,
+      groupStatusboardByDispatcher,
+      "all",
+      statusboardDriverFilterId,
+      statusboardDispatcherFilterKey,
+    );
+  }, [
+    driversToday,
+    groupStatusboardByDispatcher,
+    statusboardDriverFilterId,
+    statusboardDispatcherFilterKey,
+  ]);
+
+  const visibleOnStatusboard = useMemo(
+    () => collectStatusboardVisibleDrivers(statusboardSectionsForCounts, groupStatusboardByDispatcher),
+    [statusboardSectionsForCounts, groupStatusboardByDispatcher],
+  );
+
   const driverStatusCounts = useMemo(
-    () => (driversToday ? countDriversByStatus(driversToday.allDrivers) : null),
-    [driversToday],
+    () => countDriversByStatus(visibleOnStatusboard),
+    [visibleOnStatusboard],
   );
 
   const driverFilterOptions = useMemo(
@@ -211,26 +327,6 @@ export default function Dashboard() {
     }, 1000);
     return () => clearInterval(timer);
   }, [autoRefresh, refreshDashboard]);
-
-  useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const liveDateTime = useMemo(
-    () =>
-      new Intl.DateTimeFormat(locale === "uz" ? "uz-UZ" : "en-US", {
-        weekday: "long",
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false,
-      }).format(now),
-    [now, locale],
-  );
 
   const periodLabel = useMemo(() => {
     const weeks = [...new Set(selectedWeeks.map(normalizeWeekStart).filter(Boolean))].sort();
@@ -431,13 +527,13 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-5">
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3">
         <div>
-          <h1 className="text-3xl sm:text-4xl font-bold text-foreground tracking-tight" data-testid="dashboard-title">
+          <h1 className="text-2xl sm:text-3xl font-bold text-foreground tracking-tight" data-testid="dashboard-title">
             {t("dashboard.title")}
           </h1>
-          <p className="text-base sm:text-lg text-muted-foreground mt-2">
+          <p className="text-sm text-muted-foreground mt-1">
             {isDispatcher ? t("dashboard.subtitleDispatcher") : t("dashboard.subtitleCompany")}
           </p>
         </div>
@@ -477,69 +573,70 @@ export default function Dashboard() {
         )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
         <Card>
-          <CardContent className="p-6">
+          <CardContent className="p-4">
             <div className="flex justify-between items-start">
               <div>
-                <p className="text-sm font-medium text-muted-foreground mb-1">{t("dashboard.totalGross")}</p>
-                {kpiLoading ? <Skeleton className="h-8 w-24" /> : (
-                  <h3 className="text-2xl font-bold text-foreground" data-testid="kpi-gross">{formatCurrency(kpi?.totalGross)}</h3>
+                <p className="text-xs font-medium text-muted-foreground mb-0.5">{t("dashboard.totalGross")}</p>
+                {kpiLoadsLoading ? <Skeleton className="h-6 w-24" /> : (
+                  <h3 className="text-xl font-bold text-foreground" data-testid="kpi-gross">{formatCurrency(kpi?.totalGross)}</h3>
                 )}
               </div>
-              <div className="p-2 bg-primary/10 rounded-lg"><DollarSign className="h-5 w-5 text-accent" /></div>
+              <div className="p-1.5 bg-primary/10 rounded-md"><DollarSign className="h-4 w-4 text-accent" /></div>
             </div>
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="p-6">
+          <CardContent className="p-4">
             <div className="flex justify-between items-start">
               <div>
-                <p className="text-sm font-medium text-muted-foreground mb-1">{t("dashboard.totalMiles")}</p>
-                {kpiLoading ? <Skeleton className="h-8 w-24" /> : (
-                  <h3 className="text-2xl font-bold text-foreground" data-testid="kpi-miles">{formatNumber(kpi?.totalMiles ?? 0)}</h3>
+                <p className="text-xs font-medium text-muted-foreground mb-0.5">{t("dashboard.totalMiles")}</p>
+                {kpiLoadsLoading ? <Skeleton className="h-6 w-24" /> : (
+                  <h3 className="text-xl font-bold text-foreground" data-testid="kpi-miles">{formatNumber(kpi?.totalMiles ?? 0)}</h3>
                 )}
               </div>
-              <div className="p-2 bg-indigo-50 rounded-lg"><Route className="h-5 w-5 text-indigo-500" /></div>
+              <div className="p-1.5 bg-indigo-50 rounded-md"><Route className="h-4 w-4 text-indigo-500" /></div>
             </div>
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="p-6">
+          <CardContent className="p-4">
             <div className="flex justify-between items-start">
               <div>
-                <p className="text-sm font-medium text-muted-foreground mb-1">{t("dashboard.avgRpm")}</p>
-                {kpiLoading ? <Skeleton className="h-8 w-24" /> : (
-                  <h3 className="text-2xl font-bold text-foreground" data-testid="kpi-rpm">{formatCurrency(kpi?.avgRpm)}</h3>
+                <p className="text-xs font-medium text-muted-foreground mb-0.5">{t("dashboard.avgRpm")}</p>
+                {kpiLoadsLoading ? <Skeleton className="h-6 w-24" /> : (
+                  <h3 className="text-xl font-bold text-foreground" data-testid="kpi-rpm">{formatCurrency(kpi?.avgRpm)}</h3>
                 )}
               </div>
-              <div className="p-2 bg-green-50 rounded-lg"><TrendingUp className="h-5 w-5 text-[#2E7D32]" /></div>
+              <div className="p-1.5 bg-green-50 rounded-md"><TrendingUp className="h-4 w-4 text-[#2E7D32]" /></div>
             </div>
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="p-6">
+          <CardContent className="p-4">
             <div className="flex justify-between items-start">
               <div>
-                <p className="text-sm font-medium text-muted-foreground mb-1">{t("dashboard.grossPerDriver")}</p>
-                {kpiLoading ? <Skeleton className="h-8 w-24" /> : (
-                  <h3 className="text-2xl font-bold text-foreground" data-testid="kpi-gross-per-driver">
+                <p className="text-xs font-medium text-muted-foreground mb-0.5">{t("dashboard.grossPerDriver")}</p>
+                {kpiLoadsLoading ? <Skeleton className="h-6 w-24" /> : (
+                  <h3 className="text-xl font-bold text-foreground" data-testid="kpi-gross-per-driver">
                     {formatCurrency(kpi?.grossPerDriver ?? 0)}
                   </h3>
                 )}
               </div>
-              <div className="p-2 bg-amber-50 rounded-lg"><Divide className="h-5 w-5 text-amber-600" /></div>
+              <div className="p-1.5 bg-amber-50 rounded-md"><Divide className="h-4 w-4 text-amber-600" /></div>
             </div>
           </CardContent>
         </Card>
       </div>
 
-      <Card>
-          <CardHeader className="pb-2 border-b border-border">
-            <CardTitle className="text-lg font-bold text-foreground">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-start">
+      <Card className="lg:col-span-8 w-full">
+          <CardHeader className="px-3 py-2 border-b border-border">
+            <CardTitle className="text-sm font-bold text-foreground">
               {t("dashboard.leaderboard")}
             </CardTitle>
-            <p className="text-sm text-muted-foreground mt-1">
+            <p className="text-[11px] text-muted-foreground mt-0.5">
               {t("dashboard.leaderboardPeriod", { period: periodLabel })}
               {selectedDispatcherName && (
                 <span className="ml-1 font-medium text-foreground">
@@ -549,50 +646,61 @@ export default function Dashboard() {
             </p>
           </CardHeader>
           <CardContent className="p-0">
-            {rankingLoading ? (
-              <div className="p-6 space-y-4">
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-10 w-full" />
+            {kpiLoadsLoading ? (
+              <div className="p-4 space-y-2">
+                <Skeleton className="h-8 w-full" />
+                <Skeleton className="h-8 w-full" />
+                <Skeleton className="h-8 w-full" />
               </div>
             ) : ranking && ranking.length > 0 ? (
-              <div className="overflow-x-auto overflow-y-auto max-h-[calc(2.75rem+5*3.25rem)]">
-                <table className="w-full text-sm text-left">
-                  <thead className="sticky top-0 z-10 text-xs text-muted-foreground bg-muted/95 uppercase border-b backdrop-blur-sm">
+              <div className="overflow-x-auto overflow-y-auto max-h-[calc(1.75rem+5*2.25rem)]">
+                <table className="w-full text-xs text-left">
+                  <thead className="sticky top-0 z-10 text-[10px] text-muted-foreground bg-muted/95 uppercase border-b backdrop-blur-sm">
                     <tr>
-                      <th className="px-6 py-3">{t("dashboard.rank")}</th>
-                      <th className="px-6 py-3">{t("dashboard.dispatcher")}</th>
-                      <th className="px-6 py-3">{t("dashboard.loads")}</th>
-                      <th className="px-6 py-3">{t("dashboard.gross")}</th>
-                      <th className="px-6 py-3">{t("dashboard.avgRpm")}</th>
-                      <th className="px-6 py-3">{t("dashboard.score")}</th>
+                      <th className="px-2 py-1.5 w-10">{t("dashboard.rank")}</th>
+                      <th className="px-2 py-1.5">{t("dashboard.dispatcher")}</th>
+                      <th className="px-2 py-1.5 text-right">{t("dashboard.loads")}</th>
+                      <th className="px-2 py-1.5 text-right">{t("dashboard.gross")}</th>
+                      <th className="px-2 py-1.5 text-right">{t("dashboard.avgRpm")}</th>
+                      <th className="px-2 py-1.5 w-[4.5rem]">{t("dashboard.dailyActivity")}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {ranking.map((r, i) => {
                       const isMe = me?.id === r.dispatcherId;
+                      const activity = computeDispatcherDailyActivity(
+                        chartWeekLoads,
+                        r.dispatcherId,
+                        [leaderboardActivityWeek],
+                      );
                       return (
                       <tr
                         key={r.dispatcherId}
                         className={`border-b hover:bg-muted/50 ${isMe ? "bg-primary/5" : ""}`}
                       >
-                        <td className="px-6 py-4">
+                        <td className="px-2 py-1.5">
                           <LeaderboardRank rank={i + 1} />
                         </td>
-                        <td className="px-6 py-4 font-semibold text-foreground">
-                          <span className="inline-flex items-center gap-2 min-w-0">
-                            <span className="truncate">{r.dispatcherName}</span>
+                        <td className="px-2 py-1.5 font-semibold text-foreground">
+                          <span className="inline-flex items-center gap-1.5 min-w-0">
+                            <span className="truncate max-w-[7rem]">{r.dispatcherName}</span>
                             {isMe && (
-                              <span className="shrink-0 text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-md bg-primary text-primary-foreground">
+                              <span className="shrink-0 text-[9px] font-bold uppercase tracking-wide px-1 py-0.5 rounded-md bg-primary text-primary-foreground">
                                 {t("dashboard.leaderboardMe")}
                               </span>
                             )}
                           </span>
                         </td>
-                        <td className="px-6 py-4">{r.loads}</td>
-                        <td className="px-6 py-4">{formatCurrency(r.gross)}</td>
-                        <td className="px-6 py-4">{formatCurrency(r.avgRpm)}</td>
-                        <td className="px-6 py-4 font-bold text-accent">{r.kpiScore.toFixed(1)}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">{r.loads}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums whitespace-nowrap">{formatCurrency(r.gross)}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums whitespace-nowrap">{formatCurrency(r.avgRpm)}</td>
+                        <td className="px-2 py-1.5">
+                          <DispatcherActivityChart
+                            values={activity}
+                            weekStart={leaderboardActivityWeek}
+                          />
+                          <span className="sr-only">{r.kpiScore.toFixed(1)}</span>
+                        </td>
                       </tr>
                       );
                     })}
@@ -605,6 +713,42 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
+        <Card className="lg:col-span-4 w-full">
+          <CardHeader className="px-3 py-2 border-b border-border">
+            <CardTitle className="text-sm font-bold text-foreground">
+              {t("dashboard.topDrivers")}
+            </CardTitle>
+            <p className="text-[11px] text-muted-foreground mt-0.5">{periodLabel}</p>
+          </CardHeader>
+          <CardContent className="px-3 py-2">
+            {companyLoadsLoading ? (
+              <Skeleton className="h-24 w-full rounded-md" />
+            ) : topDrivers.length === 0 ? (
+              <p className="text-xs text-muted-foreground py-6 text-center">
+                {t("dashboard.topDriversEmpty")}
+              </p>
+            ) : (
+              <ul className="divide-y divide-border/60">
+                {topDrivers.map((d, i) => (
+                  <li key={d.driverId} className="flex items-center justify-between gap-2 py-2 text-xs">
+                    <span className="flex items-center gap-2 min-w-0">
+                      <span className="shrink-0 w-5 text-center font-bold text-muted-foreground">{i + 1}</span>
+                      <span className="truncate font-medium text-foreground">{d.name}</span>
+                    </span>
+                    <span className="shrink-0 text-right tabular-nums">
+                      <span className="block font-semibold text-foreground">{formatCurrency(d.gross)}</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {formatNumber(d.loads)} {t("dashboard.loads")}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
       <Card className="overflow-hidden">
         <CardContent className="p-4 sm:p-5">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
@@ -615,12 +759,12 @@ export default function Dashboard() {
               </p>
             </div>
             <div className="flex flex-col sm:items-end">
-              <p
-                className="text-sm font-semibold text-foreground tabular-nums"
+              <EtLiveClock
+                variant="full"
+                showLabel
+                className="sm:text-right"
                 data-testid="dashboard-live-clock"
-              >
-                {t("dashboard.liveNow")}: {liveDateTime}
-              </p>
+              />
             </div>
           </div>
           {driversTodayLoading ? (
@@ -660,8 +804,8 @@ export default function Dashboard() {
                 </div>
               )}
               <DriverStatusChips
-                total={driversToday?.totalDrivers ?? 0}
-                statusCounts={driverStatusCounts ?? emptyStatusCounts()}
+                total={visibleOnStatusboard.length}
+                statusCounts={driverStatusCounts}
                 selected={driverChipFilter}
                 onSelect={handleDriverChipSelect}
                 allLabel={t("dashboard.driversAll")}

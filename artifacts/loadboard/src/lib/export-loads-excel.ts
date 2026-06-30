@@ -1,5 +1,6 @@
 import ExcelJS from "exceljs";
 import type { Load } from "@workspace/api-client-react";
+import { todayIsoLocal } from "@/lib/date-range";
 
 /** Matches app `--sheet-hdr` (hsl 210 57% 24%) and `--sheet-hdr-border` (hsl 210 57% 38%). */
 const SHEET_HDR_BG = "FF1A3C5E";
@@ -287,7 +288,7 @@ export async function exportLoadsBoardExcel(
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `${labels.filePrefix}_${new Date().toISOString().split("T")[0]}.xlsx`;
+  anchor.download = `${labels.filePrefix}_${todayIsoLocal()}.xlsx`;
   anchor.click();
   URL.revokeObjectURL(url);
 }

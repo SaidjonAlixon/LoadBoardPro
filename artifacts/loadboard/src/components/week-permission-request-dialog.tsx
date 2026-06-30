@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -10,9 +10,16 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import type { Load, User } from "@workspace/api-client-react";
+import type { Load } from "@workspace/api-client-react";
 
 type Props = {
   open: boolean;
@@ -35,6 +42,20 @@ export function WeekPermissionRequestDialog({
   const [loadId, setLoadId] = useState("");
   const [fieldDescription, setFieldDescription] = useState("");
   const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setLoadId("");
+      setFieldDescription("");
+      setMessage("");
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (loadId && !loads.some((l) => l.id === loadId)) {
+      setLoadId("");
+    }
+  }, [loads, loadId]);
 
   const handleSubmit = async () => {
     if (!loadId || !fieldDescription.trim()) {
@@ -80,19 +101,27 @@ export function WeekPermissionRequestDialog({
         <div className="space-y-3 py-2">
           <div className="space-y-2">
             <Label htmlFor="req-load">{t("weekLock.requestLoad")}</Label>
-            <select
-              id="req-load"
-              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
-              value={loadId}
-              onChange={(e) => setLoadId(e.target.value)}
-            >
-              <option value="">{t("weekLock.requestPickLoad")}</option>
-              {loads.map((l) => (
-                <option key={l.id} value={l.id}>
-                  #{l.loadNumber} — {l.originCity ?? "?"} → {l.destCity ?? "?"}
-                </option>
-              ))}
-            </select>
+            <Select value={loadId || undefined} onValueChange={setLoadId} disabled={!loads.length}>
+              <SelectTrigger id="req-load" className="bg-background">
+                <SelectValue
+                  placeholder={
+                    loads.length
+                      ? t("weekLock.requestPickLoad")
+                      : t("weekLock.requestNoOwnLoads")
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent className="max-h-[min(19.5rem,var(--radix-select-content-available-height))]">
+                {loads.map((l) => (
+                  <SelectItem key={l.id} value={l.id}>
+                    #{l.loadNumber} — {l.originCity ?? "?"} → {l.destCity ?? "?"}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {!loads.length && (
+              <p className="text-xs text-muted-foreground">{t("weekLock.requestNoOwnLoads")}</p>
+            )}
           </div>
           <div className="space-y-2">
             <Label htmlFor="req-field">{t("weekLock.requestField")}</Label>

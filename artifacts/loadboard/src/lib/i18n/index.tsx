@@ -9,7 +9,7 @@ import {
 } from "react";
 import en from "./en";
 import uz from "./uz";
-import { parseDateOnly } from "../date-range";
+import { APP_TIMEZONE, formatInEt, parseDateOnly } from "@workspace/calendar";
 
 export type Locale = "en" | "uz";
 
@@ -40,6 +40,7 @@ interface I18nContextValue {
   t: (key: string, vars?: Record<string, string | number>) => string;
   formatCurrency: (amount?: number) => string;
   formatDate: (date: string | Date) => string;
+  formatDateTime: (date: string | Date) => string;
   formatNumber: (n: number) => string;
 }
 
@@ -83,8 +84,21 @@ export function I18nProvider({ children }: { children: ReactNode }) {
         typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)
           ? parseDateOnly(date)
           : new Date(date);
-      return new Intl.DateTimeFormat(intlLocale).format(d);
+      return new Intl.DateTimeFormat(intlLocale, { timeZone: APP_TIMEZONE }).format(d);
     },
+    [intlLocale],
+  );
+
+  const formatDateTime = useCallback(
+    (date: string | Date) =>
+      formatInEt(date, intlLocale, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      }),
     [intlLocale],
   );
 
@@ -94,8 +108,8 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ locale, setLocale, t, formatCurrency, formatDate, formatNumber }),
-    [locale, setLocale, t, formatCurrency, formatDate, formatNumber],
+    () => ({ locale, setLocale, t, formatCurrency, formatDate, formatDateTime, formatNumber }),
+    [locale, setLocale, t, formatCurrency, formatDate, formatDateTime, formatNumber],
   );
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;

@@ -3,7 +3,7 @@ import { db, loadsTable, driversTable, usersTable, brokersTable, notificationsTa
 import { eq, and, or, like, ilike, desc, gte, lte, sql, inArray, asc, isNull } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/requireAuth";
 import { isLoadDispatcherLocked } from "../lib/load-statuses";
-import { getMondayOfWeek, normalizeWeekStart, todayIsoLocal, weekEndFromStart, computeLoadWeekMoveDates } from "../lib/week-calendar";
+import { getMondayOfWeek, normalizeWeekStart, todayIsoLocal, weekEndFromStart, computeLoadWeekMoveDates, instantToIsoDate } from "../lib/week-calendar";
 import { applyWeekPeriodFilters } from "../lib/period-filters";
 import {
   isDraftLoadNumberValue,
@@ -206,8 +206,13 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
 
   const resolvedWeekStart = getMondayOfWeek(puDate || weekStart || todayIsoLocal());
 
+  const markStatusBoardOnly =
+    statusBoardOnly === true
+    && (req.userRole === "dispatcher" || req.userRole === "admin");
+
   if (
-    await denyIfDispatcherLockedWeek(resolvedWeekStart, req.userId, req.userRole, res)
+    !markStatusBoardOnly
+    && (await denyIfDispatcherLockedWeek(resolvedWeekStart, req.userId, req.userRole, res))
   ) {
     return;
   }
@@ -215,10 +220,6 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
   const resolvedDispatcherId =
     dispatcherId
     ?? (req.userRole === "dispatcher" ? req.userId : null);
-
-  const markStatusBoardOnly =
-    statusBoardOnly === true
-    && (req.userRole === "dispatcher" || req.userRole === "admin");
 
   const isDispatcherRole = req.userRole === "dispatcher" || req.userRole === "admin";
   if (isDispatcherRole && !isDraftLoadNumberValue(loadNumber)) {
@@ -270,7 +271,19 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
     createdById: req.userId ?? null,
   }).returning();
 
-  res.status(201).json(serializeLoad(load));
+  const [driver, dispatcher, broker] = await Promise.all([
+    load.driverId
+      ? db.query.driversTable.findFirst({ where: eq(driversTable.id, load.driverId) })
+      : null,
+    load.dispatcherId
+      ? db.query.usersTable.findFirst({ where: eq(usersTable.id, load.dispatcherId) })
+      : null,
+    load.brokerId
+      ? db.query.brokersTable.findFirst({ where: eq(brokersTable.id, load.brokerId) })
+      : null,
+  ]);
+
+  res.status(201).json(serializeLoad(load, { driver, dispatcher, broker }));
 });
 
 // POST /api/loads/bulk-move-week — move loads to another board week (accounting/admin)
@@ -380,8 +393,11 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
   const targetWeekStart = String(
     req.body.weekStart ?? load.weekStart ?? load.puDate ?? todayIsoLocal(),
   );
+  const statusBoardScope = req.get(LOAD_BOARD_SCOPE_HEADER)?.toLowerCase() === "statusboard";
+  const skipWeekLock = load.statusBoardOnly && statusBoardScope;
   if (
-    await denyIfDispatcherLockedWeek(targetWeekStart, req.userId, req.userRole, res)
+    !skipWeekLock
+    && (await denyIfDispatcherLockedWeek(targetWeekStart, req.userId, req.userRole, res))
   ) {
     return;
   }
@@ -527,7 +543,7 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
     const dt = updates.puScheduledAt as Date | null;
     if (dt) {
       if (!("puDate" in updates) || !updates.puDate) {
-        updates.puDate = dt.toISOString().split("T")[0];
+        updates.puDate = instantToIsoDate(dt);
       }
       updates.weekStart = getMondayOfWeek(String(updates.puDate));
     }
@@ -538,7 +554,7 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
     const dt = updates.delScheduledAt as Date | null;
     if (dt) {
       if (!("delDate" in updates) || !updates.delDate) {
-        updates.delDate = dt.toISOString().split("T")[0];
+        updates.delDate = instantToIsoDate(dt);
       }
     }
     updates.delReminderSentAt = null;
@@ -597,6 +613,18 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
     return;
   }
 
+  const [driver, dispatcher, broker] = await Promise.all([
+    updated.driverId
+      ? db.query.driversTable.findFirst({ where: eq(driversTable.id, updated.driverId) })
+      : null,
+    updated.dispatcherId
+      ? db.query.usersTable.findFirst({ where: eq(usersTable.id, updated.dispatcherId) })
+      : null,
+    updated.brokerId
+      ? db.query.brokersTable.findFirst({ where: eq(brokersTable.id, updated.brokerId) })
+      : null,
+  ]);
+
   // Notify accounting if B-I diff is negative
   const { biDiff } = computeDiffs(updated);
   if (biDiff !== null && biDiff < 0) {
@@ -612,7 +640,7 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
     }
   }
 
-  res.json(serializeLoad(updated));
+  res.json(serializeLoad(updated, { driver, dispatcher, broker }));
 });
 
 // DELETE /api/loads/:id (admin + dispatcher + accounting, soft delete)
@@ -631,13 +659,16 @@ router.delete("/:id", requireAuth, requireRole("admin", "dispatcher", "accountin
     res.status(403).json({ error: "Load is locked for accounting review" });
     return;
   }
+  const statusBoardScope = req.get(LOAD_BOARD_SCOPE_HEADER)?.toLowerCase() === "statusboard";
+  const skipWeekLock = load.statusBoardOnly && statusBoardScope;
   if (
-    await denyIfDispatcherLockedWeek(
+    !skipWeekLock
+    && (await denyIfDispatcherLockedWeek(
       load.weekStart ?? load.puDate ?? todayIsoLocal(),
       req.userId,
       req.userRole,
       res,
-    )
+    ))
   ) {
     return;
   }

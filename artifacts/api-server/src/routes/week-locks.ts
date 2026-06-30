@@ -23,6 +23,7 @@ import {
   canUserEditWeek,
   getActiveGrantExpiry,
   listPendingRequests,
+  revokeWeekEditGrant,
 } from "../lib/week-lock-access";
 
 const router = Router();
@@ -112,8 +113,8 @@ router.post("/schedule", requireAuth, requireRole("admin", "accounting"), async 
     return;
   }
   const mon = normalizeWeekStart(weekStart);
-  await scheduleWeekLock(mon, at);
-  res.json({ weekStart: mon, scheduledLockAt: at.toISOString() });
+  const info = await scheduleWeekLock(mon, at, req.userId ?? null);
+  res.json({ weekStart: mon, ...info });
 });
 
 // DELETE /api/week-locks/schedule?weekStart=
@@ -138,37 +139,89 @@ router.get("/grants", requireAuth, requireRole("admin", "accounting"), async (re
   const mon = normalizeWeekStart(weekStart);
   const now = new Date();
   const grants = await db
-    .select()
+    .select({
+      id: weekEditGrantsTable.id,
+      weekStart: weekEditGrantsTable.weekStart,
+      userId: weekEditGrantsTable.userId,
+      grantedBy: weekEditGrantsTable.grantedBy,
+      expiresAt: weekEditGrantsTable.expiresAt,
+      note: weekEditGrantsTable.note,
+      createdAt: weekEditGrantsTable.createdAt,
+      userName: usersTable.name,
+      userEmail: usersTable.email,
+    })
     .from(weekEditGrantsTable)
+    .innerJoin(usersTable, eq(weekEditGrantsTable.userId, usersTable.id))
     .where(and(eq(weekEditGrantsTable.weekStart, mon), gt(weekEditGrantsTable.expiresAt, now)))
     .orderBy(desc(weekEditGrantsTable.expiresAt));
-  res.json(grants.map((g) => ({
-    ...g,
-    expiresAt: g.expiresAt.toISOString(),
-    createdAt: g.createdAt.toISOString(),
-  })));
+  res.json(
+    grants.map((g) => ({
+      ...g,
+      userName: g.userName ?? g.userEmail ?? g.userId,
+      expiresAt: g.expiresAt.toISOString(),
+      createdAt: g.createdAt.toISOString(),
+    })),
+  );
+});
+
+// POST /api/week-locks/grants/revoke
+router.post("/grants/revoke", requireAuth, requireRole("admin", "accounting"), async (req, res) => {
+  const { grantId } = req.body as { grantId?: string };
+  if (!grantId) {
+    res.status(400).json({ error: "grantId required" });
+    return;
+  }
+  try {
+    const ok = await revokeWeekEditGrant(grantId);
+    if (!ok) {
+      res.status(404).json({ error: "Grant not found" });
+      return;
+    }
+    res.json({ revoked: true });
+  } catch (err) {
+    req.log?.error({ err }, "Failed to revoke week edit grant");
+    res.status(500).json({ error: "Failed to revoke grant" });
+  }
 });
 
 // POST /api/week-locks/grants
 router.post("/grants", requireAuth, requireRole("admin", "accounting"), async (req: AuthRequest, res) => {
-  const { weekStart, userIds, durationHours, note } = req.body as {
+  const { weekStart, userIds, durationHours, durationMinutes, note } = req.body as {
     weekStart?: string;
     userIds?: string[];
     durationHours?: number;
+    durationMinutes?: number;
     note?: string;
   };
   if (!weekStart || !Array.isArray(userIds) || userIds.length === 0) {
     res.status(400).json({ error: "weekStart and userIds required" });
     return;
   }
-  const hours = durationHours ?? 1;
-  if (![1, 3].includes(hours) && hours < 1) {
-    res.status(400).json({ error: "durationHours must be 1, 3, or positive" });
+  if (
+    typeof durationMinutes !== "number"
+    && typeof durationHours !== "number"
+  ) {
+    res.status(400).json({ error: "durationMinutes or durationHours required" });
     return;
   }
   const mon = normalizeWeekStart(weekStart);
-  await grantWeekEditAccess(mon, userIds, req.userId!, hours, note);
-  res.status(201).json({ granted: userIds.length, durationHours: hours });
+  await grantWeekEditAccess(mon, userIds, req.userId!, { durationHours, durationMinutes, note });
+  res.status(201).json({ granted: userIds.length, durationMinutes: durationMinutes ?? (durationHours ?? 1) * 60 });
+});
+
+// DELETE /api/week-locks/grants/:id
+router.delete("/grants/:id", requireAuth, requireRole("admin", "accounting"), async (req, res) => {
+  try {
+    const ok = await revokeWeekEditGrant(req.params.id);
+    if (!ok) {
+      res.status(404).json({ error: "Grant not found" });
+      return;
+    }
+    res.json({ revoked: true });
+  } catch (err) {
+    req.log?.error({ err }, "Failed to revoke week edit grant");
+    res.status(500).json({ error: "Failed to revoke grant" });
+  }
 });
 
 // POST /api/week-locks/requests
@@ -207,7 +260,7 @@ router.post("/requests", requireAuth, requireRole("dispatcher"), async (req: Aut
     .returning();
 
   const requester = await db.query.usersTable.findFirst({ where: eq(usersTable.id, req.userId!) });
-  const name = requester?.fullName ?? requester?.email ?? "Dispatcher";
+  const name = requester?.name ?? requester?.email ?? "Dispatcher";
   await notifyAccountants(
     `${name} requests edit on Load #${load.loadNumber} (${fieldDescription.trim()}). ${message?.trim() ?? ""}`.trim(),
     loadId,
@@ -228,8 +281,14 @@ router.post(
   requireAuth,
   requireRole("admin", "accounting"),
   async (req: AuthRequest, res) => {
-    const { grantDurationHours } = req.body as { grantDurationHours?: number };
-    const hours = grantDurationHours === 3 ? 3 : 1;
+    const { grantDurationHours, grantDurationMinutes } = req.body as {
+      grantDurationHours?: number;
+      grantDurationMinutes?: number;
+    };
+    const minutes =
+      typeof grantDurationMinutes === "number" && grantDurationMinutes >= 1
+        ? Math.min(Math.floor(grantDurationMinutes), 24 * 60)
+        : (grantDurationHours === 3 ? 3 : 1) * 60;
     const request = await db.query.editPermissionRequestsTable.findFirst({
       where: eq(editPermissionRequestsTable.id, req.params.id),
     });
@@ -243,7 +302,7 @@ router.post(
         status: "approved",
         reviewedBy: req.userId ?? null,
         reviewedAt: new Date(),
-        grantDurationHours: hours,
+        grantDurationHours: Math.ceil(minutes / 60),
       })
       .where(eq(editPermissionRequestsTable.id, request.id));
 
@@ -251,21 +310,23 @@ router.post(
       request.weekStart,
       [request.requestedBy],
       req.userId!,
-      hours,
-      `Approved edit request for load ${request.loadId}`,
+      {
+        durationMinutes: minutes,
+        note: `Approved edit request for load ${request.loadId}`,
+      },
     );
 
     const load = await db.query.loadsTable.findFirst({ where: eq(loadsTable.id, request.loadId) });
-    const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + minutes * 60 * 1000);
     await db.insert(notificationsTable).values({
       id: crypto.randomUUID(),
       userId: request.requestedBy,
-      text: `Edit permission granted for week ${request.weekStart}. You have until ${expiresAt.toLocaleString()} to update Load #${load?.loadNumber ?? request.loadId} (${request.fieldDescription}).`,
+      text: `Edit permission granted for week ${request.weekStart}. You have ${minutes} minute(s) until ${expiresAt.toLocaleString()} to update Load #${load?.loadNumber ?? request.loadId} (${request.fieldDescription}).`,
       loadId: request.loadId,
       kind: "edit_request_approved",
     });
 
-    res.json({ status: "approved", grantDurationHours: hours });
+    res.json({ status: "approved", grantDurationMinutes: minutes });
   },
 );
 

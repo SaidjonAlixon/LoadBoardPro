@@ -13,6 +13,7 @@ import {
   type DriversTodayResponse,
   type DispatcherDriverGroup,
 } from "@/lib/drivers-today";
+import { todayIsoLocal } from "@/lib/date-range";
 import {
   DRIVER_BOARD_STATUS_COLORS,
   DRIVER_BOARD_STATUSES,
@@ -723,7 +724,7 @@ export async function exportDashboardExcel(
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `${labels.filePrefix}_${new Date().toISOString().split("T")[0]}.xlsx`;
+  anchor.download = `${labels.filePrefix}_${todayIsoLocal()}.xlsx`;
   anchor.click();
   URL.revokeObjectURL(url);
 }

@@ -9,6 +9,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Bell } from "lucide-react";
 import { toast } from "sonner";
 
@@ -29,6 +31,7 @@ type Props = {
 export function WeekPendingRequestsButton({ t }: Props) {
   const [open, setOpen] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [minutesByRequest, setMinutesByRequest] = useState<Record<string, string>>({});
   const qc = useQueryClient();
 
   const { data: requests = [], refetch } = useQuery<PendingRequest[]>({
@@ -41,7 +44,7 @@ export function WeekPendingRequestsButton({ t }: Props) {
     refetchInterval: 30_000,
   });
 
-  const review = async (id: string, action: "approve" | "deny", hours?: number) => {
+  const review = async (id: string, action: "approve" | "deny", minutes?: number) => {
     setBusyId(id);
     try {
       const url =
@@ -52,7 +55,10 @@ export function WeekPendingRequestsButton({ t }: Props) {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: action === "approve" ? JSON.stringify({ grantDurationHours: hours }) : undefined,
+        body:
+          action === "approve"
+            ? JSON.stringify({ grantDurationMinutes: minutes ?? 60 })
+            : undefined,
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? "Failed");
@@ -60,7 +66,55 @@ export function WeekPendingRequestsButton({ t }: Props) {
         action === "approve" ? t("weekLock.requestApproved") : t("weekLock.requestDenied"),
       );
       void refetch();
+      void qc.invalidateQueries({ queryKey: ["/api/week-locks/grants"] });
+      void qc.invalidateQueries({ queryKey: ["/api/week-locks/access"] });
       void qc.invalidateQueries({ queryKey: ["/api/notifications"] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t("weekLock.failed"));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const parseMinutes = (id: string, fallback = 60) => {
+    const raw = minutesByRequest[id]?.trim() || String(fallback);
+    return Math.max(1, Math.min(1440, Math.floor(Number(raw)) || fallback));
+  };
+
+  const approveWithMinutes = (id: string) => {
+    void review(id, "approve", parseMinutes(id));
+  };
+
+  const requestsWithMinutes = requests.filter((r) => {
+    const raw = minutesByRequest[r.id]?.trim();
+    return raw !== undefined && raw !== "" && Number(raw) >= 1;
+  });
+
+  const handleDone = async () => {
+    if (requestsWithMinutes.length === 0) {
+      setOpen(false);
+      return;
+    }
+    setBusyId("batch");
+    try {
+      for (const r of requestsWithMinutes) {
+        const url = `/api/week-locks/requests/${r.id}/approve`;
+        const minutes = parseMinutes(r.id);
+        const res = await fetch(url, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ grantDurationMinutes: minutes }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error ?? "Failed");
+      }
+      toast.success(t("weekLock.requestApproved"));
+      void refetch();
+      void qc.invalidateQueries({ queryKey: ["/api/week-locks/grants"] });
+      void qc.invalidateQueries({ queryKey: ["/api/week-locks/access"] });
+      void qc.invalidateQueries({ queryKey: ["/api/notifications"] });
+      setOpen(false);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : t("weekLock.failed"));
     } finally {
@@ -97,27 +151,44 @@ export function WeekPendingRequestsButton({ t }: Props) {
                   {t("weekLock.requestWeek")}: {r.weekStart} · Load {r.loadId.slice(0, 8)}…
                 </p>
                 {r.message && <p className="text-xs">{r.message}</p>}
-                <div className="flex flex-wrap gap-2 pt-1">
+                <div className="flex flex-wrap items-end gap-2 pt-1">
+                  <div className="space-y-1">
+                    <Label htmlFor={`mins-${r.id}`} className="text-[10px] text-muted-foreground">
+                      {t("weekLock.grantMinutes")}
+                    </Label>
+                    <Input
+                      id={`mins-${r.id}`}
+                      type="number"
+                      min={1}
+                      max={1440}
+                      className="h-8 w-20 bg-background text-foreground"
+                      placeholder="5"
+                      value={minutesByRequest[r.id] ?? ""}
+                      onChange={(e) =>
+                        setMinutesByRequest((prev) => ({ ...prev, [r.id]: e.target.value }))
+                      }
+                    />
+                  </div>
                   <Button
                     size="sm"
-                    className="h-7 text-xs"
+                    className="h-8 text-xs"
                     disabled={busyId === r.id}
-                    onClick={() => review(r.id, "approve", 1)}
+                    onClick={() => approveWithMinutes(r.id)}
+                  >
+                    {t("weekLock.approveMinutes")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-8 text-xs"
+                    disabled={busyId === r.id}
+                    onClick={() => review(r.id, "approve", 60)}
                   >
                     {t("weekLock.approve1h")}
                   </Button>
                   <Button
                     size="sm"
-                    className="h-7 text-xs"
-                    disabled={busyId === r.id}
-                    onClick={() => review(r.id, "approve", 3)}
-                  >
-                    {t("weekLock.approve3h")}
-                  </Button>
-                  <Button
-                    size="sm"
                     variant="outline"
-                    className="h-7 text-xs"
+                    className="h-8 text-xs"
                     disabled={busyId === r.id}
                     onClick={() => review(r.id, "deny")}
                   >
@@ -128,8 +199,14 @@ export function WeekPendingRequestsButton({ t }: Props) {
             ))}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>
-              {t("common.done")}
+            <Button
+              variant={requestsWithMinutes.length > 0 ? "default" : "outline"}
+              disabled={busyId !== null}
+              onClick={() => void handleDone()}
+            >
+              {requestsWithMinutes.length > 0
+                ? t("weekLock.approveAndDone")
+                : t("common.done")}
             </Button>
           </DialogFooter>
         </DialogContent>

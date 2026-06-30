@@ -123,20 +123,19 @@ export function DashboardPeriodToolbar({
   const showActiveBadge = normalizedSelected.includes(calendarWeekStart);
 
   return (
-    <div className="flex flex-col gap-3 w-full">
-      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+    <div className="flex flex-col gap-2 w-full">
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
             <Switch
               id="dash-auto-refresh"
               checked={autoRefresh}
               onCheckedChange={onAutoRefreshChange}
-              className="scale-125"
             />
-            <Label htmlFor="dash-auto-refresh" className="text-sm sm:text-base font-semibold cursor-pointer leading-tight">
+            <Label htmlFor="dash-auto-refresh" className="text-xs sm:text-sm font-semibold cursor-pointer leading-tight">
               {t("dashboard.autoRefresh")}
               {autoRefresh && (
-                <span className="block text-xs sm:text-sm text-muted-foreground font-normal mt-0.5">
+                <span className="block text-[10px] sm:text-xs text-muted-foreground font-normal mt-0.5">
                   {t("dashboard.autoRefreshEvery", {
                     sec: refreshIntervalSec,
                     remaining: refreshCountdown,
@@ -148,54 +147,54 @@ export function DashboardPeriodToolbar({
           <Button
             type="button"
             variant="outline"
-            className="h-11 px-4 gap-2 text-sm sm:text-base border-border"
+            className="h-8 px-3 gap-1.5 text-xs sm:text-sm border-border"
             onClick={onRefresh}
             disabled={refreshing}
           >
-            <RefreshCw className={`h-5 w-5 ${refreshing ? "animate-spin" : ""}`} />
+            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
             {t("dashboard.refresh")}
           </Button>
           <Button
             type="button"
-            className="btn-export-excel no-default-hover-elevate h-11 px-4 gap-2 text-sm sm:text-base"
+            className="btn-export-excel no-default-hover-elevate h-8 px-3 gap-1.5 text-xs sm:text-sm"
             onClick={onExport}
             disabled={exporting}
           >
-            <Download className="h-5 w-5" />
+            <Download className="h-3.5 w-3.5" />
             {exporting ? t("dashboard.exporting") : t("dashboard.exportExcel")}
           </Button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center rounded-lg border border-border bg-card shadow-sm overflow-hidden">
             <Button
               type="button"
               variant="ghost"
               size="icon"
-              className="h-11 w-11 rounded-none shrink-0"
+              className="h-8 w-8 rounded-none shrink-0"
               onClick={() => navigateWeek(1)}
               disabled={weekOptions.length === 0 || !canGoOlder}
               aria-label={t("dashboard.prevWeek")}
             >
-              <ChevronLeft className="h-5 w-5" />
+              <ChevronLeft className="h-4 w-4" />
             </Button>
             <Popover open={weekListOpen} onOpenChange={setWeekListOpen}>
               <PopoverTrigger asChild>
                 <button
                   type="button"
-                  className="flex flex-col items-center px-4 py-2.5 min-w-[200px] sm:min-w-[240px] hover:bg-muted/50 transition-colors border-x border-border"
+                  className="flex flex-col items-center px-3 py-1.5 min-w-[168px] sm:min-w-[200px] hover:bg-muted/50 transition-colors border-x border-border"
                 >
-                  <span className="text-xs sm:text-sm font-bold text-accent uppercase tracking-widest">
+                  <span className="text-[10px] sm:text-xs font-bold text-accent uppercase tracking-widest">
                     {t("dashboard.title")}
                   </span>
-                  <span className="text-sm sm:text-base font-semibold text-foreground flex items-center gap-2 mt-0.5">
+                  <span className="text-xs sm:text-sm font-semibold text-foreground flex items-center gap-1.5 mt-0.5">
                     {headerLabel}
                     {showActiveBadge && (
-                      <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wide text-green-800 bg-green-100 px-2 py-0.5 rounded">
+                      <span className="text-[9px] sm:text-[10px] font-bold uppercase tracking-wide text-green-800 bg-green-100 px-1.5 py-0.5 rounded">
                         {t("dashboard.weekActive")}
                       </span>
                     )}
-                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                    <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
                   </span>
                 </button>
               </PopoverTrigger>
@@ -263,12 +262,12 @@ export function DashboardPeriodToolbar({
               type="button"
               variant="ghost"
               size="icon"
-              className="h-11 w-11 rounded-none shrink-0"
+              className="h-8 w-8 rounded-none shrink-0"
               onClick={() => navigateWeek(-1)}
               disabled={weekOptions.length === 0 || !canGoNewer}
               aria-label={t("dashboard.nextWeek")}
             >
-              <ChevronRight className="h-5 w-5" />
+              <ChevronRight className="h-4 w-4" />
             </Button>
           </div>
         </div>

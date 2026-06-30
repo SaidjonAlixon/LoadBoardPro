@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { SheetDatePicker } from "@/components/sheet-date-picker";
+import { SheetDatePicker, type SheetDatePickerHandle } from "@/components/sheet-date-picker";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import {
   blockInvalidNumericKey,
@@ -7,6 +7,7 @@ import {
   sanitizeNumericInput,
 } from "@/lib/numeric-input";
 import { cn } from "@/lib/utils";
+import { getEtParts, instantToIsoDate } from "@workspace/calendar";
 
 const INPUT_CLS =
   "w-full h-full min-h-[22px] px-1 py-0 text-[11px] border-2 border-accent outline-none bg-sheet-cell text-sheet-cell-fg rounded-none";
@@ -136,8 +137,10 @@ export function SheetEditableCell({
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [dateText, setDateText] = useState("");
   const inputRef = useRef<HTMLInputElement | HTMLSelectElement>(null);
+  const datePickerRef = useRef<SheetDatePickerHandle>(null);
   const didAutoEdit = useRef(false);
   const calendarOpenRef = useRef(false);
+  const [datePickerKey, setDatePickerKey] = useState(0);
 
   useEffect(() => {
     calendarOpenRef.current = calendarOpen;
@@ -410,13 +413,19 @@ export function SheetEditableCell({
               placeholder={datePlaceholder}
               value={dateText}
               onChange={(e) => setDateText(e.target.value)}
-              onFocus={() => setCalendarOpen(true)}
+              onFocus={() => {
+                setDatePickerKey((k) => k + 1);
+                setCalendarOpen(true);
+              }}
               onBlur={() => {
                 window.setTimeout(() => {
                   if (!calendarOpenRef.current) void commitDateFromText(false);
                 }, 0);
               }}
               onKeyDown={(e) => {
+                if (calendarOpen && datePickerRef.current?.handleKeyDown(e)) {
+                  return;
+                }
                 if (isClipboardMod(e)) {
                   const key = e.key.toLowerCase();
                   if (key === "c") {
@@ -455,8 +464,11 @@ export function SheetEditableCell({
             onOpenAutoFocus={(e) => e.preventDefault()}
           >
             <SheetDatePicker
+              key={datePickerKey}
+              ref={datePickerRef}
               selected={selectedDate}
               defaultMonth={defaultMonth}
+              onNavigate={(d) => setDateText(isoToSheetDate(formatIsoDate(d)))}
               onSelect={(d) => {
                 if (!d) return;
                 void commitDate(d, true);
@@ -574,17 +586,22 @@ export function sheetDateToIso(display: string): string {
   if (m) return `${m[3]}-${m[2]}-${m[1]}`;
   if (/^\d{4}-\d{2}-\d{2}$/.test(display)) return display;
   const d = new Date(display);
-  if (!isNaN(d.getTime())) return d.toISOString().split("T")[0];
+  if (!isNaN(d.getTime())) return instantToIsoDate(d);
   return display;
 }
 
-/** ISO -> DD.MM.YYYY for display/edit */
+/** ISO -> DD.MM.YYYY for display/edit (Eastern calendar day) */
 export function isoToSheetDate(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  return `${dd}.${mm}.${d.getFullYear()}`;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+    const [y, m, d] = iso.split("-");
+    return `${d}.${m}.${y}`;
+  }
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return iso;
+  const p = getEtParts(parsed);
+  const dd = String(p.day).padStart(2, "0");
+  const mm = String(p.month).padStart(2, "0");
+  return `${dd}.${mm}.${p.year}`;
 }
 
 interface SheetDispatcherCellProps {

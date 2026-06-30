@@ -893,6 +893,19 @@ export default function LoadsList() {
       if (!res.ok) throw new Error("Failed to load weeks");
       return res.json();
     },
+    refetchInterval: (query) => {
+      const weeks = query.state.data;
+      if (!weeks?.some((w) => w.scheduledLockAt && !w.isLocked)) return false;
+      const soonest = weeks
+        .filter((w) => w.scheduledLockAt && !w.isLocked)
+        .map((w) => new Date(w.scheduledLockAt!).getTime())
+        .sort((a, b) => a - b)[0];
+      if (soonest === undefined) return false;
+      const remaining = soonest - Date.now();
+      if (remaining <= 0) return 3_000;
+      if (remaining <= 120_000) return 10_000;
+      return 30_000;
+    },
   });
 
   const createWeekMutation = useMutation({
@@ -919,6 +932,52 @@ export default function LoadsList() {
     },
     onError: (err: Error) => {
       toast.error(err.message || t("loads.weekCreateFailed"));
+    },
+  });
+
+  const deleteWeekMutation = useMutation({
+    mutationFn: async (weekStartToDelete: string) => {
+      const ws = encodeURIComponent(normalizeWeekStart(weekStartToDelete));
+      const res = await fetch(`/api/board-weeks/${ws}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const text = await res.text();
+      let body: { error?: string } = {};
+      try {
+        body = text ? JSON.parse(text) : {};
+      } catch {
+        if (text.includes("Cannot DELETE")) {
+          throw new Error(t("loads.weekDeleteServerRestart"));
+        }
+      }
+      if (!res.ok) {
+        const msg = body.error === "Cannot delete the last week"
+          ? t("loads.cannotDeleteLastWeek")
+          : body.error === "Week not found"
+            ? t("loads.weekNotFound")
+            : body.error === "Failed to delete week"
+              ? t("loads.weekDeleteFailed")
+              : (body.error ?? t("loads.weekDeleteFailed"));
+        throw new Error(msg);
+      }
+      return body as { weekStart: string; deletedLoads: number };
+    },
+    onSuccess: (data) => {
+      const deleted = normalizeWeekStart(data.weekStart);
+      try {
+        sessionStorage.removeItem(`lb_hidden_drivers_${deleted}`);
+      } catch {
+        /* ignore */
+      }
+      void qc.invalidateQueries({ queryKey: ["/api/board-weeks"] });
+      void qc.invalidateQueries({ queryKey: ["/api/loads"] });
+      void qc.invalidateQueries({ queryKey: ["/api/analytics"] });
+      void qc.invalidateQueries({ queryKey: ["/api/analytics/drivers-today"] });
+      toast.success(t("loads.weekDeleted"));
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || t("loads.weekDeleteFailed"));
     },
   });
 
@@ -1050,9 +1109,12 @@ export default function LoadsList() {
             onWeekChange={handleWeekChange}
             onCreateWeek={() => createWeekMutation.mutate()}
             creatingWeek={createWeekMutation.isPending}
+            onDeleteWeek={(ws) => deleteWeekMutation.mutateAsync(ws)}
+            deletingWeek={deleteWeekMutation.isPending}
             onAddLoad={() => setAddOpen(true)}
             compactDriverGroups={compactDriverGroups}
             filterDriverId={filters.driverId || undefined}
+            filterStatus={filters.status || undefined}
             dispatcherFilterId={canFilterDispatchers ? filters.dispatcherId || undefined : undefined}
             dispatchers={dispatchers ?? []}
             toolbarLeading={

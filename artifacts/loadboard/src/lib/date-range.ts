@@ -1,61 +1,32 @@
 export type DashboardDateRange = "thisWeek" | "lastWeek" | "thisMonth";
 export type AccountingDatePreset = DashboardDateRange | "all" | "custom";
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+export {
+  APP_TIMEZONE,
+  addDays,
+  formatInEt,
+  getEtMonthRange,
+  getMondayOfWeek,
+  getThisWeekStart,
+  normalizeWeekStart,
+  parseDateOnly,
+  todayIsoLocal,
+  toIsoDateLocal,
+  weekDayDiff,
+  weekEndFromStart,
+} from "@workspace/calendar";
 
-/** Parse YYYY-MM-DD as local calendar date (avoids UTC timezone shifts). */
-export function parseDateOnly(dateStr: string): Date {
-  if (ISO_DATE.test(dateStr)) {
-    const [y, m, d] = dateStr.split("-").map(Number);
-    return new Date(y, m - 1, d, 12, 0, 0, 0);
-  }
-  const d = new Date(dateStr);
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0, 0);
-}
-
-export function toIsoDateLocal(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function toIsoDate(d: Date): string {
-  return toIsoDateLocal(d);
-}
-
-/** Monday of the calendar week (Mon–Sun) containing dateStr. */
-export function getMondayOfWeek(dateStr: string): string {
-  if (!dateStr) return "";
-  const d = parseDateOnly(dateStr);
-  if (isNaN(d.getTime())) return dateStr;
-  const day = d.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
-  return toIsoDateLocal(d);
-}
-
-/** Snap any date to the Monday of its calendar week. */
-export function normalizeWeekStart(weekStart: string): string {
-  return getMondayOfWeek(weekStart);
-}
-
-export function addDays(dateStr: string, days: number): string {
-  const d = parseDateOnly(dateStr);
-  d.setDate(d.getDate() + days);
-  return toIsoDateLocal(d);
-}
-
-/** Calendar days from one week Monday to another. */
-export function weekDayDiff(fromWeekStart: string, toWeekStart: string): number {
-  const from = parseDateOnly(normalizeWeekStart(fromWeekStart));
-  const to = parseDateOnly(normalizeWeekStart(toWeekStart));
-  return Math.round((to.getTime() - from.getTime()) / 86_400_000);
-}
-
-export function weekEndFromStart(weekStart: string): string {
-  return addDays(normalizeWeekStart(weekStart), 6);
-}
+import {
+  addDays,
+  getEtMonthRange,
+  getMondayOfWeek,
+  getThisWeekStart,
+  normalizeWeekStart,
+  parseDateOnly,
+  todayIsoLocal,
+  toIsoDateLocal,
+  weekEndFromStart,
+} from "@workspace/calendar";
 
 /** ISO week id e.g. 2026-25 for PID label */
 export function getWeekPid(weekStart: string): string {
@@ -70,10 +41,6 @@ export function getWeekPid(weekStart: string): string {
   const diff = d.getTime() - week1Monday.getTime();
   const week = Math.floor(diff / (7 * 24 * 60 * 60 * 1000)) + 1;
   return `${year}-${String(week).padStart(2, "0")}`;
-}
-
-export function getThisWeekStart(): string {
-  return getMondayOfWeek(toIsoDateLocal(new Date()));
 }
 
 export function getLastWeekStart(): string {
@@ -98,7 +65,7 @@ export function getDashboardKpiParams(range: DashboardDateRange): {
   dateFrom?: string;
   dateTo?: string;
 } {
-  const today = toIsoDateLocal(new Date());
+  const today = todayIsoLocal();
 
   if (range === "thisWeek") {
     const weekStart = getMondayOfWeek(today);
@@ -110,10 +77,7 @@ export function getDashboardKpiParams(range: DashboardDateRange): {
     return { dateFrom: weekStart, dateTo: weekEndFromStart(weekStart) };
   }
 
-  const now = new Date();
-  const first = new Date(now.getFullYear(), now.getMonth(), 1, 12, 0, 0, 0);
-  const last = new Date(now.getFullYear(), now.getMonth() + 1, 0, 12, 0, 0, 0);
-  return { dateFrom: toIsoDate(first), dateTo: toIsoDate(last) };
+  return getEtMonthRange();
 }
 
 export function getDashboardRankingParams(range: DashboardDateRange): {
@@ -122,12 +86,12 @@ export function getDashboardRankingParams(range: DashboardDateRange): {
   dateTo?: string;
 } {
   if (range === "thisWeek") {
-    const weekStart = getMondayOfWeek(toIsoDateLocal(new Date()));
+    const weekStart = getMondayOfWeek(todayIsoLocal());
     return { weekStart };
   }
 
   if (range === "lastWeek") {
-    return { weekStart: addDays(getMondayOfWeek(toIsoDateLocal(new Date())), -7) };
+    return { weekStart: addDays(getMondayOfWeek(todayIsoLocal()), -7) };
   }
 
   return getDashboardKpiParams(range);

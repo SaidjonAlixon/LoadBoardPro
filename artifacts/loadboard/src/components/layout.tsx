@@ -28,6 +28,7 @@ import { useListNotifications, useGetMe } from "@workspace/api-client-react";
 import { UserAvatar } from "@/components/user-avatar";
 import { LoadBoardProLogo } from "./brand-logo";
 import { ScheduleReminderBanner } from "@/components/schedule-reminder-banner";
+import { EtLiveClock } from "@/components/et-live-clock";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -287,6 +288,7 @@ export default function Layout({ children }: LayoutProps) {
             <Menu size={24} />
           </button>
           <LoadBoardProLogo className="h-12 w-auto max-w-[300px] shrink-0" />
+          <EtLiveClock variant="compact" className="text-right" />
           <UserProfileMenu showName={false} />
         </header>
 
@@ -304,6 +306,7 @@ export default function Layout({ children }: LayoutProps) {
             <LoadBoardProLogo className="h-14 w-auto max-w-[340px] shrink-0" />
           </div>
           <div className="flex items-center gap-3">
+            <EtLiveClock variant="compact" className="hidden sm:flex mr-1" />
             <ThemeToggle />
             <LanguageSwitcher />
             <Link

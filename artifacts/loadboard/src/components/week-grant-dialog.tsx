@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -9,14 +9,8 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { toast } from "sonner";
 import type { User } from "@workspace/api-client-react";
 
@@ -38,9 +32,30 @@ export function WeekGrantDialog({
   onGranted,
 }: Props) {
   const [busy, setBusy] = useState(false);
-  const [durationHours, setDurationHours] = useState("1");
+  const [durationMinutes, setDurationMinutes] = useState("60");
   const [allDispatchers, setAllDispatchers] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setSearch("");
+      setAllDispatchers(true);
+      setSelected(new Set());
+    }
+  }, [open]);
+
+  const filteredDispatchers = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return dispatchers;
+    return dispatchers.filter((d) => {
+      const name = (d.fullName ?? "").toLowerCase();
+      const email = (d.email ?? "").toLowerCase();
+      return name.includes(q) || email.includes(q);
+    });
+  }, [dispatchers, search]);
+
+  const dispatcherLabel = (d: User) => d.fullName?.trim() || d.email || d.id;
 
   const toggleDispatcher = (id: string) => {
     setSelected((prev) => {
@@ -52,13 +67,12 @@ export function WeekGrantDialog({
   };
 
   const handleGrant = async () => {
-    const userIds = allDispatchers
-      ? dispatchers.map((d) => d.id)
-      : [...selected];
+    const userIds = allDispatchers ? dispatchers.map((d) => d.id) : [...selected];
     if (!userIds.length) {
       toast.error(t("weekLock.pickDispatchers"));
       return;
     }
+    const minutes = Math.max(1, Math.min(1440, Math.floor(Number(durationMinutes)) || 60));
     setBusy(true);
     try {
       const res = await fetch("/api/week-locks/grants", {
@@ -68,7 +82,7 @@ export function WeekGrantDialog({
         body: JSON.stringify({
           weekStart,
           userIds,
-          durationHours: Number(durationHours),
+          durationMinutes: minutes,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -93,40 +107,78 @@ export function WeekGrantDialog({
 
         <div className="space-y-4 py-2">
           <div className="space-y-2">
-            <Label>{t("weekLock.grantDuration")}</Label>
-            <Select value={durationHours} onValueChange={setDurationHours}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="1">{t("weekLock.hours1")}</SelectItem>
-                <SelectItem value="3">{t("weekLock.hours3")}</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Checkbox
-              id="all-dispatchers"
-              checked={allDispatchers}
-              onCheckedChange={(v) => setAllDispatchers(v === true)}
-            />
-            <Label htmlFor="all-dispatchers">{t("weekLock.allDispatchers")}</Label>
-          </div>
-
-          {!allDispatchers && (
-            <div className="max-h-48 overflow-y-auto space-y-2 rounded-md border border-border p-2">
-              {dispatchers.map((d) => (
-                <label key={d.id} className="flex items-center gap-2 text-sm cursor-pointer">
-                  <Checkbox
-                    checked={selected.has(d.id)}
-                    onCheckedChange={() => toggleDispatcher(d.id)}
-                  />
-                  <span>{d.fullName ?? d.email}</span>
-                </label>
-              ))}
+            <Label htmlFor="grant-minutes">{t("weekLock.grantMinutes")}</Label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                id="grant-minutes"
+                type="number"
+                min={1}
+                max={1440}
+                className="h-9 w-24 bg-background"
+                value={durationMinutes}
+                onChange={(e) => setDurationMinutes(e.target.value)}
+              />
+              <Button type="button" variant="outline" size="sm" onClick={() => setDurationMinutes("5")}>
+                5m
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => setDurationMinutes("60")}>
+                {t("weekLock.hours1")}
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => setDurationMinutes("180")}>
+                {t("weekLock.hours3")}
+              </Button>
             </div>
-          )}
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2 shrink-0">
+                <Checkbox
+                  id="all-dispatchers"
+                  checked={allDispatchers}
+                  onCheckedChange={(v) => setAllDispatchers(v === true)}
+                />
+                <Label htmlFor="all-dispatchers">{t("weekLock.allDispatchers")}</Label>
+              </div>
+              {!allDispatchers && (
+                <Input
+                  type="search"
+                  className="h-8 bg-background text-sm sm:max-w-[220px]"
+                  placeholder={t("weekLock.searchDispatcher")}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              )}
+            </div>
+
+            {!allDispatchers && (
+              <div className="max-h-[19.5rem] overflow-y-auto rounded-md border border-border p-2 space-y-1">
+                {filteredDispatchers.length === 0 ? (
+                  <p className="px-1 py-2 text-sm text-muted-foreground">
+                    {t("weekLock.noDispatchersFound")}
+                  </p>
+                ) : (
+                  filteredDispatchers.map((d) => (
+                    <label
+                      key={d.id}
+                      className="flex min-h-7 items-center gap-2 rounded px-1 py-0.5 text-sm cursor-pointer hover:bg-muted/50"
+                    >
+                      <Checkbox
+                        checked={selected.has(d.id)}
+                        onCheckedChange={() => toggleDispatcher(d.id)}
+                      />
+                      <span className="min-w-0 truncate font-medium">{dispatcherLabel(d)}</span>
+                      {d.fullName?.trim() && d.email ? (
+                        <span className="hidden min-w-0 truncate text-xs text-muted-foreground sm:inline">
+                          {d.email}
+                        </span>
+                      ) : null}
+                    </label>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <DialogFooter>

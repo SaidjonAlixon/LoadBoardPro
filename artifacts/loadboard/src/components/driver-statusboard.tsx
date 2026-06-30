@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, Fragment } from "react";
+import { useCallback, useMemo, useState, Fragment, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useListDrivers, type Driver } from "@workspace/api-client-react";
 import type { DriverTodayBlock, DriverChipFilter, DispatcherDriverGroup } from "@/lib/drivers-today";
@@ -34,6 +34,8 @@ import { formatWeekRangeLabel } from "@/lib/date-range";
 import {
   buildStatusBoardSectionRows,
   isStatusBoardNewLoad,
+  loadsForStatusboardSection,
+  countStatusboardVisibleRows,
 } from "@/lib/status-board-new-load";
 import { toast } from "sonner";
 
@@ -49,32 +51,21 @@ const DRIVER_TYPE_STYLES: Record<string, string> = {
   Lease: "bg-purple-100 text-purple-800 border border-purple-200 dark:bg-purple-950/50 dark:text-purple-200 dark:border-purple-800",
 };
 
-function loadsForSection(
-  block: DriverTodayBlock,
-  sectionDispatcherId: string | null,
-  groupByDispatcher: boolean,
-): Array<DriverTodayBlock["loads"][number] | null> {
-  if (!block.loads.length) return [null];
+const loadsForSection = loadsForStatusboardSection;
 
-  let scoped = block.loads;
-  if (groupByDispatcher) {
-    scoped =
-      sectionDispatcherId === null
-        ? block.loads.filter((l) => !l.dispatcherId)
-        : block.loads.filter((l) => l.dispatcherId === sectionDispatcherId);
-    if (!scoped.length) return [null];
-  }
-
-  return [...scoped].sort((a, b) => {
-    const aDate = a.puDate ?? "";
-    const bDate = b.puDate ?? "";
-    if (aDate !== bDate) return aDate.localeCompare(bDate);
-    return (a.loadNumber ?? "").localeCompare(b.loadNumber ?? "");
-  });
+function isStatusBoardOwnedLoad(load: {
+  statusBoardOnly?: boolean | null;
+  loadNumber?: string | null;
+}): boolean {
+  if (load.statusBoardOnly === true) return true;
+  return /^NEW-/i.test(load.loadNumber?.trim() ?? "");
 }
 
-function isStatusBoardOwnedLoad(load: { statusBoardOnly?: boolean | null }): boolean {
-  return load.statusBoardOnly === true;
+function deleteViaLoadsApi(load: {
+  statusBoardOnly?: boolean | null;
+  loadNumber?: string | null;
+}): boolean {
+  return isStatusBoardOwnedLoad(load);
 }
 
 function driverInputKey(driverId: string, field: string, value: unknown): string {
@@ -134,18 +125,7 @@ export function DriverStatusboard({
   editorRole,
   scopedDispatcherId = null,
 }: DriverStatusboardProps) {
-  const { t, formatDate } = useI18n();
-  const formatDateTime = useCallback(
-    (d: string | Date) =>
-      new Date(d).toLocaleString(undefined, {
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-    [],
-  );
+  const { t, formatDate, formatDateTime } = useI18n();
   const qc = useQueryClient();
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [statusOverrides, setStatusOverrides] = useState<Record<string, DriverBoardStatus>>({});
@@ -155,6 +135,7 @@ export function DriverStatusboard({
   const [addingRow, setAddingRow] = useState(false);
   const [driverAddOpen, setDriverAddOpen] = useState(false);
   const [swapDriverLoadId, setSwapDriverLoadId] = useState<string | null>(null);
+  const [removedLoadIds, setRemovedLoadIds] = useState<Set<string>>(() => new Set());
 
   const resolveFlatDispatcherId = useCallback((): string | null => {
     if (scopedDispatcherId) return scopedDispatcherId;
@@ -167,6 +148,32 @@ export function DriverStatusboard({
     () => (driversList ?? []).filter((d: Driver) => d.isActive),
     [driversList],
   );
+
+  const unassignedDriverIds = useMemo(() => {
+    const unassignedGroup = groups?.find((g) => g.dispatcherId === null);
+    return new Set(unassignedGroup?.drivers.map((b) => b.driver.id) ?? []);
+  }, [groups]);
+
+  const driversForDraftPicker = useMemo(() => {
+    if (!groupByDispatcher) return activeDrivers;
+    return activeDrivers.filter((d) => unassignedDriverIds.has(d.id));
+  }, [activeDrivers, groupByDispatcher, unassignedDriverIds]);
+
+  useEffect(() => {
+    setRemovedLoadIds(new Set());
+  }, [weekStart]);
+
+  useEffect(() => {
+    setRemovedLoadIds((prev) => {
+      if (!prev.size) return prev;
+      const visibleIds = new Set<string>();
+      for (const block of drivers) {
+        for (const load of block.loads) visibleIds.add(load.id);
+      }
+      const next = new Set([...prev].filter((id) => visibleIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [drivers]);
 
   const patchDriver = useCallback(
     async (driverId: string, body: Record<string, unknown>) => {
@@ -199,7 +206,7 @@ export function DriverStatusboard({
       load: { id: string; statusBoardOnly?: boolean | null },
       body: Record<string, unknown>,
     ) => {
-      const owned = isStatusBoardOwnedLoad(load);
+      const owned = deleteViaLoadsApi(load);
       setSavingKey(`load:${load.id}`);
       try {
         const res = await fetch(
@@ -271,8 +278,9 @@ export function DriverStatusboard({
         }
         void invalidateDriverQueries(qc);
         return true;
-      } catch {
-        toast.error(t("statusboard.loadSaveFailed"));
+      } catch (e) {
+        const message = e instanceof Error ? e.message : t("statusboard.loadSaveFailed");
+        toast.error(message === "create failed" ? t("statusboard.loadSaveFailed") : message);
         return false;
       }
     },
@@ -346,12 +354,13 @@ export function DriverStatusboard({
   const deleteLoadRow = useCallback(
     async (load: { id: string; loadNumber?: string | null; statusBoardOnly?: boolean | null }) => {
       const label = load.loadNumber?.trim() || load.id.slice(0, 8);
-      const fromLoads = !isStatusBoardOwnedLoad(load);
+      const fromLoads = !deleteViaLoadsApi(load);
       const confirmKey = fromLoads
         ? "statusboard.hideSpreadsheetLoadConfirm"
         : "loads.sheet.deleteRowConfirm";
       if (!window.confirm(t(confirmKey, { loadNumber: label }))) return;
       setSavingKey(`load:${load.id}`);
+      setRemovedLoadIds((prev) => new Set(prev).add(load.id));
       try {
         const res = await fetch(
           fromLoads ? `/api/status-board/loads/${load.id}` : `/api/loads/${load.id}`,
@@ -365,13 +374,18 @@ export function DriverStatusboard({
           const err = await res.json().catch(() => ({}));
           throw new Error((err as { error?: string }).error ?? "delete failed");
         }
-        void invalidateDriverQueries(qc);
+        await invalidateDriverQueries(qc);
         toast.success(
           fromLoads
             ? t("statusboard.hideSpreadsheetLoadSuccess")
             : t("loads.sheet.deleteRowSuccess"),
         );
       } catch (e) {
+        setRemovedLoadIds((prev) => {
+          const next = new Set(prev);
+          next.delete(load.id);
+          return next;
+        });
         const message = e instanceof Error ? e.message : t("loads.sheet.deleteRowFailed");
         toast.error(message === "delete failed" ? t("loads.sheet.deleteRowFailed") : message);
       } finally {
@@ -413,19 +427,12 @@ export function DriverStatusboard({
     return sections;
   }, [draftSectionKey, draftSectionDispatcherId, groupByDispatcher, groups, resolveFlatDispatcherId, sections]);
 
-  const countSectionRows = useCallback(
-    (section: { dispatcherId: string | null; drivers: DriverTodayBlock[] }) =>
-      buildStatusBoardSectionRows(
-        section.drivers,
-        section.dispatcherId,
-        groupByDispatcher,
-        loadsForSection,
-      ).length,
-    [groupByDispatcher],
+  const tableCounts = useMemo(
+    () => countStatusboardVisibleRows(displaySections, groupByDispatcher, removedLoadIds),
+    [displaySections, groupByDispatcher, removedLoadIds],
   );
 
-  const totalRows = displaySections.reduce((n, s) => n + countSectionRows(s), 0);
-  const showTable = totalRows > 0 || draftSectionKey !== null;
+  const showTable = tableCounts.rows > 0 || draftSectionKey !== null;
 
   const flatCanAdd =
     !groupByDispatcher &&
@@ -955,7 +962,7 @@ export function DriverStatusboard({
         <td className={cn(cell, "min-w-[180px]")} onClick={(e) => e.stopPropagation()}>
           <DriverSearchSelect
             value={draftDriverId}
-            drivers={activeDrivers}
+            drivers={driversForDraftPicker}
             disabled={addingRow}
             addDisabled={addingRow}
             onValueChange={(v) => {
@@ -1018,9 +1025,9 @@ export function DriverStatusboard({
             </p>
           </div>
           <div className="flex flex-col sm:items-end gap-2">
-            {totalRows > 0 && (
+            {tableCounts.drivers > 0 && (
               <p className="text-xs text-muted-foreground font-medium">
-                {totalRows} {t("dashboard.driver").toLowerCase()}(s)
+                {tableCounts.drivers} {t("dashboard.driver").toLowerCase()}(s)
               </p>
             )}
             {flatCanAdd && (
@@ -1129,14 +1136,19 @@ export function DriverStatusboard({
                       section.dispatcherId,
                       groupByDispatcher,
                       loadsForSection,
-                    ).map(({ block, load }, idx) =>
-                      renderRow(
-                        block,
-                        section,
-                        load,
-                        `${sectionKey(section)}:${block.driver.id}:${load?.id ?? `empty-${idx}`}`,
-                      ),
-                    )}
+                    )
+                      .filter(
+                        ({ load }) =>
+                          load == null || (load.id && !removedLoadIds.has(load.id)),
+                      )
+                      .map(({ block, load }, idx) =>
+                        renderRow(
+                          block,
+                          section,
+                          load,
+                          `${sectionKey(section)}:${block.driver.id}:${load?.id ?? `empty-${idx}`}`,
+                        ),
+                      )}
                     {draftSectionKey === sectionKey(section) && renderDraftRow(section)}
                   </Fragment>
                 ))}

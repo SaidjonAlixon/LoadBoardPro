@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type MouseEvent } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -13,7 +13,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Calendar, ChevronDown, ChevronLeft, ChevronRight, Lock, Plus } from "lucide-react";
+import { Calendar, ChevronDown, ChevronLeft, ChevronRight, Lock, Plus, Trash2 } from "lucide-react";
 import {
   addDays,
   formatWeekRangeLabel,
@@ -35,9 +35,12 @@ type Props = {
   onWeekChange: (weekStart: string) => void;
   onCreateWeek: () => void;
   creatingWeek?: boolean;
+  onDeleteWeek?: (weekStart: string) => void | Promise<void>;
+  deletingWeek?: boolean;
   formatDate: (d: string | Date) => string;
   t: (key: string, vars?: Record<string, string | number>) => string;
   canManageWeeks?: boolean;
+  canDeleteWeeks?: boolean;
 };
 
 export function LoadsWeekToolbar({
@@ -46,12 +49,17 @@ export function LoadsWeekToolbar({
   onWeekChange,
   onCreateWeek,
   creatingWeek = false,
+  onDeleteWeek,
+  deletingWeek = false,
   formatDate,
   t,
   canManageWeeks = true,
+  canDeleteWeeks = false,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteTargetWeek, setDeleteTargetWeek] = useState<string | null>(null);
   const active = normalizeWeekStart(weekStart);
   const calendarWeekStart = getThisWeekStart();
   const isViewingCurrentWeek = active === calendarWeekStart;
@@ -117,6 +125,34 @@ export function LoadsWeekToolbar({
     onCreateWeek();
   };
 
+  const canDeleteAnyWeek = canDeleteWeeks && weekOptions.length > 1;
+
+  const handleDeleteClick = (ws: string, e: MouseEvent) => {
+    e.stopPropagation();
+    if (!canDeleteAnyWeek || deletingWeek) return;
+    setDeleteTargetWeek(ws);
+    setDeleteConfirmOpen(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTargetWeek || !onDeleteWeek) return;
+    try {
+      await onDeleteWeek(deleteTargetWeek);
+      setDeleteConfirmOpen(false);
+      setDeleteTargetWeek(null);
+      setOpen(false);
+    } catch {
+      /* parent shows error toast */
+    }
+  };
+
+  const deleteTargetLabel = deleteTargetWeek
+    ? formatWeekRangeLabel(deleteTargetWeek, formatDate)
+    : "";
+  const deleteTargetLoadCount = deleteTargetWeek
+    ? loadCountByWeek.get(deleteTargetWeek) ?? 0
+    : 0;
+
   return (
     <>
       <div className="flex items-center gap-1.5 shrink-0">
@@ -167,32 +203,51 @@ export function LoadsWeekToolbar({
                   const isCurrentCalendarWeek = ws === calendarWeekStart;
                   const isLocked = lockedByWeek.get(ws) ?? false;
                   return (
-                    <button
+                    <div
                       key={ws}
-                      type="button"
-                      className={`w-full text-left px-2 py-2 rounded-sm text-xs hover:bg-muted transition-colors ${
-                        isSelected ? "bg-primary/10 text-primary font-semibold" : ""
+                      className={`flex items-center gap-1 rounded-sm hover:bg-muted transition-colors ${
+                        isSelected ? "bg-primary/10" : ""
                       }`}
-                      onClick={() => {
-                        onWeekChange(ws);
-                        setOpen(false);
-                      }}
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="flex items-center gap-1.5">
-                          {isLocked && <Lock className="h-3 w-3 text-red-600 shrink-0" />}
-                          {formatWeekRangeLabel(ws, formatDate)}
-                        </span>
-                        {isCurrentCalendarWeek && (
-                          <span className="sheet-toolbar-badge-active text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0">
-                            {t("dashboard.weekActive")}
+                      <button
+                        type="button"
+                        className={`flex-1 min-w-0 text-left px-2 py-2 text-xs ${
+                          isSelected ? "text-primary font-semibold" : ""
+                        }`}
+                        onClick={() => {
+                          onWeekChange(ws);
+                          setOpen(false);
+                        }}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="flex items-center gap-1.5">
+                            {isLocked && <Lock className="h-3 w-3 text-red-600 shrink-0" />}
+                            {formatWeekRangeLabel(ws, formatDate)}
                           </span>
-                        )}
-                      </div>
-                      <span className="text-muted-foreground">
-                        ({t("dashboard.weekLoadsCount", { count: loadCountByWeek.get(ws) ?? 0 })})
-                      </span>
-                    </button>
+                          {isCurrentCalendarWeek && (
+                            <span className="sheet-toolbar-badge-active text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0">
+                              {t("dashboard.weekActive")}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-muted-foreground">
+                          ({t("dashboard.weekLoadsCount", { count: loadCountByWeek.get(ws) ?? 0 })})
+                        </span>
+                      </button>
+                      {canDeleteAnyWeek && onDeleteWeek ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 shrink-0 mr-1 text-muted-foreground hover:text-destructive"
+                          title={t("loads.deleteWeek")}
+                          disabled={deletingWeek}
+                          onClick={(e) => handleDeleteClick(ws, e)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      ) : null}
+                    </div>
                   );
                 })
               )}
@@ -260,6 +315,57 @@ export function LoadsWeekToolbar({
         </DialogContent>
       </Dialog>
       )}
+
+      {canDeleteWeeks && onDeleteWeek ? (
+      <Dialog
+        open={deleteConfirmOpen}
+        onOpenChange={(next) => {
+          if (!deletingWeek) {
+            setDeleteConfirmOpen(next);
+            if (!next) setDeleteTargetWeek(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-center text-lg">
+              {t("loads.deleteWeekConfirmTitle")}
+            </DialogTitle>
+            <DialogDescription asChild>
+              <p className="text-center pt-3 text-sm text-foreground">
+                {t("loads.deleteWeekConfirmDescription", {
+                  range: deleteTargetLabel,
+                  count: deleteTargetLoadCount,
+                })}
+              </p>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex flex-row gap-3 sm:justify-center pt-2">
+            <Button
+              type="button"
+              variant="destructive"
+              className="flex-1"
+              disabled={deletingWeek || !deleteTargetWeek}
+              onClick={handleConfirmDelete}
+            >
+              {deletingWeek ? t("loads.deletingWeek") : t("loads.deleteWeekConfirmAction")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="flex-1"
+              disabled={deletingWeek}
+              onClick={() => {
+                setDeleteConfirmOpen(false);
+                setDeleteTargetWeek(null);
+              }}
+            >
+              {t("loads.deleteWeekCancel")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      ) : null}
     </>
   );
 }

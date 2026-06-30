@@ -1,9 +1,10 @@
 import { db, loadsTable, driversTable, notificationsTable } from "@workspace/db";
 import { and, eq, isNotNull, isNull, lte, or } from "drizzle-orm";
+import { formatInEt } from "@workspace/calendar";
 import { logger } from "./logger";
 
 function formatReminderTime(d: Date): string {
-  return d.toLocaleString("en-US", {
+  return formatInEt(d, "en-US", {
     month: "short",
     day: "numeric",
     hour: "numeric",

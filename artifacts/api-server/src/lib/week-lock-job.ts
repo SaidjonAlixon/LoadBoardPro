@@ -1,7 +1,7 @@
 import { logger } from "./logger";
 import { processScheduledAndRolloverLocks } from "./week-lock-access";
 
-const INTERVAL_MS = 60_000;
+const INTERVAL_MS = 15_000;
 
 export function startWeekLockJob(): void {
   const run = async () => {

@@ -30,9 +30,8 @@ router.get("/kpi", requireAuth, async (req: AuthRequest, res) => {
 
   const [result] = await db
     .select({
-      totalGross: sql<number>`coalesce(sum(${loadsTable.rate}::numeric + ${loadsTable.reimbursement}::numeric), 0)`,
+      totalGross: sql<number>`coalesce(sum(${loadsTable.rate}::numeric), 0)`,
       totalMiles: sql<number>`coalesce(sum(${loadsTable.mileage}::numeric), 0)`,
-      avgRpm: sql<number>`coalesce(avg(${loadsTable.rate}::numeric / nullif(${loadsTable.mileage}::numeric, 0)), 0)`,
       activeLoads: sql<number>`count(case when ${loadsTable.status} in ('Booked', 'InQM', 'NeedRevRC', 'Issue', 'PickedUp') then 1 end)::int`,
       brokerPaidTotal: sql<number>`coalesce(sum(${loadsTable.brokerPaid}::numeric), 0)`,
       unpaidDiff: sql<number>`coalesce(sum(case when ${loadsTable.brokerPaid}::numeric < ${loadsTable.invoicedAmount}::numeric then ${loadsTable.invoicedAmount}::numeric - ${loadsTable.brokerPaid}::numeric else 0 end), 0)`,
@@ -43,6 +42,8 @@ router.get("/kpi", requireAuth, async (req: AuthRequest, res) => {
     .where(where);
 
   const totalGross = Number(result?.totalGross ?? 0);
+  const totalMiles = Number(result?.totalMiles ?? 0);
+  const avgRpm = totalMiles > 0 ? totalGross / totalMiles : 0;
 
   let driverIdPool: Set<string>;
   if (isDispatcher || scopedDispatcherId) {
@@ -96,12 +97,23 @@ router.get("/kpi", requireAuth, async (req: AuthRequest, res) => {
 
   const totalDrivers = driverIdPool.size;
   const driversEmpty = Math.max(0, totalDrivers - driversOnLoad);
-  const grossPerDriver = totalDrivers > 0 ? totalGross / totalDrivers : 0;
+
+  let grossPerDriverDenominator = 0;
+  if (driverId) {
+    grossPerDriverDenominator = 1;
+  } else {
+    const driverRows = await db
+      .selectDistinct({ driverId: loadsTable.driverId })
+      .from(loadsTable)
+      .where(and(...conditions, sql`${loadsTable.driverId} is not null`));
+    grossPerDriverDenominator = driverRows.filter((r) => r.driverId).length;
+  }
+  const grossPerDriver = grossPerDriverDenominator > 0 ? totalGross / grossPerDriverDenominator : 0;
 
   res.json({
     totalGross,
-    totalMiles: Number(result?.totalMiles ?? 0),
-    avgRpm: Number(result?.avgRpm ?? 0),
+    totalMiles,
+    avgRpm,
     activeLoads: Number(result?.activeLoads ?? 0),
     brokerPaidTotal: Number(result?.brokerPaidTotal ?? 0),
     unpaidDiff: Number(result?.unpaidDiff ?? 0),
@@ -134,10 +146,9 @@ router.get("/ranking", requireAuth, async (req: AuthRequest, res) => {
   const loadStats = await db
     .select({
       dispatcherId: loadsTable.dispatcherId,
-      gross: sql<number>`coalesce(sum(${loadsTable.rate}::numeric + ${loadsTable.reimbursement}::numeric), 0)`,
+      gross: sql<number>`coalesce(sum(${loadsTable.rate}::numeric), 0)`,
       miles: sql<number>`coalesce(sum(${loadsTable.mileage}::numeric), 0)`,
       loads: sql<number>`count(*)::int`,
-      avgRpm: sql<number>`coalesce(avg(${loadsTable.rate}::numeric / nullif(${loadsTable.mileage}::numeric, 0)), 0)`,
     })
     .from(loadsTable)
     .where(and(...conditions))
@@ -162,7 +173,8 @@ router.get("/ranking", requireAuth, async (req: AuthRequest, res) => {
     .map((d) => {
       const stats = statsByDispatcher.get(d.id);
       const gross = Number(stats?.gross ?? 0);
-      const avgRpm = Number(stats?.avgRpm ?? 0);
+      const miles = Number(stats?.miles ?? 0);
+      const avgRpm = miles > 0 ? gross / miles : 0;
       const kpiScore = Math.round(((gross * avgRpm) / 1000) * 10) / 10;
       return {
         dispatcherId: d.id,

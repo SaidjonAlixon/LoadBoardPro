@@ -36,6 +36,15 @@ export function applyStatusBoardLoadOverride<T extends LoadLike>(
   };
 }
 
+/** Status board list — always show Loads spreadsheet row; overlay fields when not hidden. */
+export function mergeStatusBoardLoadForDisplay<T extends LoadLike>(
+  load: T,
+  override: StatusBoardLoadOverride | undefined,
+): T {
+  if (!override || override.hiddenFromBoard) return load;
+  return applyStatusBoardLoadOverride(load, override) ?? load;
+}
+
 export const STATUS_BOARD_OVERRIDE_FIELDS = [
   "loadNumber",
   "originCity",

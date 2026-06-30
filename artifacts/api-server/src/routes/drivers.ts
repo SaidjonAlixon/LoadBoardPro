@@ -1,9 +1,10 @@
 import { Router } from "express";
 import { db, driversTable, loadsTable, usersTable } from "@workspace/db";
-import { eq, desc, and, sql, gte, lte, isNull } from "drizzle-orm";
+import { eq, desc, and, sql, isNull } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/requireAuth";
 import { isLoadDispatcherLocked } from "../lib/load-statuses";
-import { getThisWeekStart, normalizeWeekStart, weekEndFromStart } from "../lib/week-calendar";
+import { applyWeekPeriodFilters } from "../lib/period-filters";
+import { getThisWeekStart, normalizeWeekStart } from "../lib/week-calendar";
 
 const router = Router();
 
@@ -41,10 +42,9 @@ router.post("/", requireAuth, async (req, res) => {
 router.delete("/:id/week-loads", requireAuth, requireRole("admin", "dispatcher"), async (req: AuthRequest, res) => {
   const driverId = req.params.id;
   const weekStart = normalizeWeekStart((req.query.weekStart as string) || getThisWeekStart());
-  const weekEnd = weekEndFromStart(weekStart);
 
   const driver = await db.query.driversTable.findFirst({
-    where: and(eq(driversTable.id, driverId), isNull(driversTable.deletedAt)),
+    where: eq(driversTable.id, driverId),
   });
   if (!driver) {
     res.status(404).json({ error: "Driver not found" });
@@ -54,9 +54,8 @@ router.delete("/:id/week-loads", requireAuth, requireRole("admin", "dispatcher")
   const conditions = [
     eq(loadsTable.driverId, driverId),
     eq(loadsTable.isDeleted, false),
-    gte(loadsTable.puDate, weekStart),
-    lte(loadsTable.puDate, weekEnd),
   ];
+  applyWeekPeriodFilters(conditions, { weekStart });
   if (req.userRole === "dispatcher" && req.userId) {
     conditions.push(eq(loadsTable.dispatcherId, req.userId));
   }

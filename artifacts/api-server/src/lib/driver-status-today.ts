@@ -1,14 +1,14 @@
 import { db, loadsTable, driversTable, usersTable, brokersTable, statusBoardLoadOverridesTable } from "@workspace/db";
 import { eq, and, inArray, isNull, sql, asc } from "drizzle-orm";
 import { applyWeekPeriodFilters, parseWeekStartsParam } from "./period-filters";
-import { getThisWeekStart, normalizeWeekStart, weekEndFromStart } from "./week-calendar";
+import { getThisWeekStart, normalizeWeekStart, todayIsoLocal, weekEndFromStart } from "./week-calendar";
 import { isLoadVisibleToViewer } from "./load-visibility";
-import { applyStatusBoardLoadOverride } from "./status-board-load-overrides";
+import { applyStatusBoardLoadOverride, mergeStatusBoardLoadForDisplay } from "./status-board-load-overrides";
 
 export const ON_LOAD_STATUSES = ["Booked", "InQM", "NeedRevRC", "Issue", "PickedUp"] as const;
 
 export function todayIso(): string {
-  return new Date().toISOString().split("T")[0];
+  return todayIsoLocal();
 }
 
 export type DriversTodayScope = "company" | "mine";
@@ -45,10 +45,7 @@ function buildDriverBlock(
   driverLoads: (typeof loadsTable.$inferSelect)[],
   mapLoad: (load: (typeof loadsTable.$inferSelect)) => ReturnType<typeof mapLoadInner>,
 ) {
-  const totalGross = driverLoads.reduce(
-    (sum, l) => sum + Number(l.rate) + Number(l.reimbursement ?? 0),
-    0,
-  );
+  const totalGross = driverLoads.reduce((sum, l) => sum + Number(l.rate), 0);
   const totalMiles = driverLoads.reduce((sum, l) => sum + Number(l.mileage), 0);
 
   return {
@@ -114,7 +111,7 @@ function mapLoadInner(
 
 function sumBlockTotals(loads: ReturnType<typeof mapLoadInner>[]) {
   return {
-    totalGross: loads.reduce((sum, l) => sum + l.rate + (l.reimbursement ?? 0), 0),
+    totalGross: loads.reduce((sum, l) => sum + l.rate, 0),
     totalMiles: loads.reduce((sum, l) => sum + l.mileage, 0),
     totalReimbursement: loads.reduce((sum, l) => sum + (l.reimbursement ?? 0), 0),
   };
@@ -136,9 +133,107 @@ function blockLoadsForDispatcher(
   };
 }
 
+/** Loads spreadsheet rows used to decide which dispatcher owns the driver on the status board. */
+function loadsForDispatcherAssignmentFromRaw(
+  rawLoads: (typeof loadsTable.$inferSelect)[],
+): (typeof loadsTable.$inferSelect)[] {
+  const spreadsheet = rawLoads.filter((l) => !l.statusBoardOnly);
+  return spreadsheet.length > 0 ? spreadsheet : rawLoads;
+}
+
+/** One driver → one dispatcher (from Loads DISPATCHERS column; majority, then latest PU). */
+function resolvePrimaryDispatcherByDriver(
+  allDrivers: ReturnType<typeof buildDriverBlock>[],
+  assignmentLoadsByDriver: Map<string, (typeof loadsTable.$inferSelect)[]>,
+): Map<string, string | null> {
+  const map = new Map<string, string | null>();
+
+  for (const block of allDrivers) {
+    const pool = loadsForDispatcherAssignmentFromRaw(
+      assignmentLoadsByDriver.get(block.driver.id) ?? [],
+    );
+    if (!pool.length) {
+      map.set(block.driver.id, null);
+      continue;
+    }
+
+    const assigned = pool.filter((l) => l.dispatcherId);
+    if (!assigned.length) {
+      map.set(block.driver.id, null);
+      continue;
+    }
+
+    const counts = new Map<string, number>();
+    const latestPu = new Map<string, string>();
+
+    for (const load of assigned) {
+      const key = load.dispatcherId!;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      const pu = load.puDate ?? "";
+      if (pu >= (latestPu.get(key) ?? "")) latestPu.set(key, pu);
+    }
+
+    let bestId: string | null = null;
+    let bestCount = -1;
+    let bestPu = "";
+
+    for (const [key, count] of counts) {
+      const pu = latestPu.get(key) ?? "";
+      if (count > bestCount || (count === bestCount && pu > bestPu)) {
+        bestCount = count;
+        bestId = key;
+        bestPu = pu;
+      }
+    }
+
+    map.set(block.driver.id, bestId);
+  }
+
+  return map;
+}
+
+function sortDriversInDispatcherGroup(
+  a: ReturnType<typeof buildDriverBlock>,
+  b: ReturnType<typeof buildDriverBlock>,
+): number {
+  return a.driver.fullName.localeCompare(b.driver.fullName);
+}
+
+function sortUnassignedDrivers(
+  a: ReturnType<typeof buildDriverBlock>,
+  b: ReturnType<typeof buildDriverBlock>,
+): number {
+  const aEmpty = a.loads.length === 0;
+  const bEmpty = b.loads.length === 0;
+  if (aEmpty !== bEmpty) return aEmpty ? 1 : -1;
+  if (!aEmpty && !bEmpty) {
+    return a.driver.fullName.localeCompare(b.driver.fullName);
+  }
+  const aCreated = a.driver.createdAt ? new Date(a.driver.createdAt).getTime() : 0;
+  const bCreated = b.driver.createdAt ? new Date(b.driver.createdAt).getTime() : 0;
+  if (aCreated !== bCreated) return aCreated - bCreated;
+  return a.driver.fullName.localeCompare(b.driver.fullName);
+}
+
+function blockForPrimarySection(
+  block: ReturnType<typeof buildDriverBlock>,
+  primaryDispatcherId: string | null,
+) {
+  if (primaryDispatcherId === null) {
+    return blockLoadsForDispatcher(block, null);
+  }
+  const totals = sumBlockTotals(block.loads);
+  return {
+    ...block,
+    loads: block.loads,
+    ...totals,
+  };
+}
+
 async function buildDispatcherGroups(
   allDrivers: ReturnType<typeof buildDriverBlock>[],
-  weekStart: string,
+  assignmentLoadsByDriver: Map<string, (typeof loadsTable.$inferSelect)[]>,
+  _weekStart: string,
 ): Promise<DispatcherDriverGroup[]> {
   const dispatchers = await db
     .select()
@@ -146,16 +241,17 @@ async function buildDispatcherGroups(
     .where(eq(usersTable.role, "dispatcher"))
     .orderBy(usersTable.name);
 
-  const assigned = new Set<string>();
+  const primaryByDriver = resolvePrimaryDispatcherByDriver(
+    allDrivers,
+    assignmentLoadsByDriver,
+  );
   const groups: DispatcherDriverGroup[] = [];
 
   for (const dispatcher of dispatchers) {
-    const pool = await getDispatcherDriverIds(dispatcher.id, weekStart);
     const drivers = allDrivers
-      .filter((b) => pool.has(b.driver.id))
-      .map((b) => blockLoadsForDispatcher(b, dispatcher.id))
-      .sort((a, b) => a.driver.fullName.localeCompare(b.driver.fullName));
-    drivers.forEach((b) => assigned.add(b.driver.id));
+      .filter((b) => primaryByDriver.get(b.driver.id) === dispatcher.id)
+      .map((b) => blockForPrimarySection(b, dispatcher.id))
+      .sort(sortDriversInDispatcherGroup);
     groups.push({
       dispatcherId: dispatcher.id,
       dispatcherName: dispatcher.name || dispatcher.email || dispatcher.nickname || "Dispatcher",
@@ -164,16 +260,15 @@ async function buildDispatcherGroups(
   }
 
   const unassigned = allDrivers
-    .filter((b) => !assigned.has(b.driver.id))
-    .map((b) => blockLoadsForDispatcher(b, null))
-    .sort((a, b) => a.driver.fullName.localeCompare(b.driver.fullName));
-  if (unassigned.length) {
-    groups.push({
-      dispatcherId: null,
-      dispatcherName: "Unassigned",
-      drivers: unassigned,
-    });
-  }
+    .filter((b) => primaryByDriver.get(b.driver.id) === null)
+    .map((b) => blockForPrimarySection(b, null))
+    .sort(sortUnassignedDrivers);
+
+  groups.push({
+    dispatcherId: null,
+    dispatcherName: "Unassigned",
+    drivers: unassigned,
+  });
 
   return groups;
 }
@@ -201,12 +296,6 @@ export async function getDriversTodayStatus(options?: {
     .where(and(eq(driversTable.isActive, true), isNull(driversTable.deletedAt)))
     .orderBy(driversTable.fullName);
 
-  let scopedDrivers = activeDrivers;
-  if (scope === "mine" && dispatcherId) {
-    const pool = await getDispatcherDriverIds(dispatcherId, weekStart);
-    scopedDrivers = activeDrivers.filter((d) => pool.has(d.id));
-  }
-
   const loadConditions = [eq(loadsTable.isDeleted, false)];
   applyWeekPeriodFilters(loadConditions, {
     weekStart,
@@ -221,6 +310,30 @@ export async function getDriversTodayStatus(options?: {
     .from(loadsTable)
     .where(and(...loadConditions))
     .orderBy(asc(loadsTable.sortOrder), asc(loadsTable.puDate));
+
+  const activeDriverIds = new Set(activeDrivers.map((d) => d.id));
+  const weekDriverIds = [
+    ...new Set(
+      weekLoads.map((l) => l.driverId).filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  const missingWeekDriverIds = weekDriverIds.filter((id) => !activeDriverIds.has(id));
+
+  let scopedDrivers = activeDrivers;
+  if (missingWeekDriverIds.length > 0) {
+    const driversWithWeekLoads = await db
+      .select()
+      .from(driversTable)
+      .where(inArray(driversTable.id, missingWeekDriverIds));
+    scopedDrivers = [...activeDrivers, ...driversWithWeekLoads].sort((a, b) =>
+      a.fullName.localeCompare(b.fullName),
+    );
+  }
+
+  if (scope === "mine" && dispatcherId) {
+    const pool = await getDispatcherDriverIds(dispatcherId, weekStart);
+    scopedDrivers = scopedDrivers.filter((d) => pool.has(d.id));
+  }
 
   const dispatcherIds = [
     ...new Set(weekLoads.map((l) => l.dispatcherId).filter(Boolean)),
@@ -256,6 +369,7 @@ export async function getDriversTodayStatus(options?: {
   const mapLoad = (load: (typeof weekLoads)[number]) =>
     mapLoadInner(load, dispMap, brokerMap);
 
+  const assignmentLoadsByDriver = new Map<string, typeof weekLoads>();
   const loadsByDriver = new Map<string, typeof weekLoads>();
   for (const load of weekLoads) {
     if (!load.driverId) continue;
@@ -266,8 +380,12 @@ export async function getDriversTodayStatus(options?: {
     ) {
       continue;
     }
-    const merged = applyStatusBoardLoadOverride(load, overrideMap[load.id]);
-    if (!merged) continue;
+
+    const assignList = assignmentLoadsByDriver.get(load.driverId) ?? [];
+    assignList.push(load);
+    assignmentLoadsByDriver.set(load.driverId, assignList);
+
+    const merged = mergeStatusBoardLoadForDisplay(load, overrideMap[load.id]);
     const list = loadsByDriver.get(load.driverId) ?? [];
     list.push(merged);
     loadsByDriver.set(load.driverId, list);
@@ -285,7 +403,9 @@ export async function getDriversTodayStatus(options?: {
   );
 
   const dispatcherGroups =
-    scope === "company" ? await buildDispatcherGroups(allDrivers, weekStart) : undefined;
+    scope === "company"
+      ? await buildDispatcherGroups(allDrivers, assignmentLoadsByDriver, weekStart)
+      : undefined;
 
   return {
     date: today,

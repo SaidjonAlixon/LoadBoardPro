@@ -2,14 +2,14 @@ import { Router } from "express";
 import { db, loadsTable, driversTable, usersTable, brokersTable, boardWeeksTable } from "@workspace/db";
 import { eq, and, sql, desc, inArray, gte, lte, isNull } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/requireAuth";
-import { mergeWeekBuckets, normalizeWeekStart, weekEndFromStart, getThisWeekStart } from "../lib/week-calendar";
+import { mergeWeekBuckets, normalizeWeekStart, weekEndFromStart, getThisWeekStart, todayIsoLocal } from "../lib/week-calendar";
 
 const router = Router();
 
 const ON_LOAD_STATUSES = ["Booked", "InQM", "NeedRevRC", "Issue", "PickedUp"] as const;
 
 function todayIso(): string {
-  return new Date().toISOString().split("T")[0];
+  return todayIsoLocal();
 }
 
 async function getDriversOnLoadTodayIds(dispatcherId?: string): Promise<Set<string>> {

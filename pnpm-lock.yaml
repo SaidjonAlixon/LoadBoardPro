@@ -89,6 +89,9 @@ importers:
       '@workspace/api-zod':
         specifier: workspace:*
         version: link:../../lib/api-zod
+      '@workspace/calendar':
+        specifier: workspace:*
+        version: link:../../lib/calendar
       '@workspace/db':
         specifier: workspace:*
         version: link:../../lib/db
@@ -267,6 +270,9 @@ importers:
       '@workspace/api-client-react':
         specifier: workspace:*
         version: link:../../lib/api-client-react
+      '@workspace/calendar':
+        specifier: workspace:*
+        version: link:../../lib/calendar
       class-variance-authority:
         specifier: 'catalog:'
         version: 0.7.1
@@ -543,6 +549,8 @@ importers:
       zod:
         specifier: 'catalog:'
         version: 3.25.76
+
+  lib/calendar: {}
 
   lib/db:
     dependencies:

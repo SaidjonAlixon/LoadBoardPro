@@ -1,7 +1,80 @@
-import type { DriverTodayBlock } from "@/lib/drivers-today";
+import type { DriverTodayBlock, DispatcherDriverGroup } from "@/lib/drivers-today";
 import { isPlaceholderCity } from "@/lib/validate-dispatcher-load";
 
 type StatusBoardLoad = DriverTodayBlock["loads"][number];
+
+export function loadsForStatusboardSection(
+  block: DriverTodayBlock,
+  sectionDispatcherId: string | null,
+  groupByDispatcher: boolean,
+): Array<StatusBoardLoad | null> {
+  if (!block.loads.length) {
+    if (groupByDispatcher && sectionDispatcherId === null) return [null];
+    return [];
+  }
+
+  let scoped = block.loads;
+  if (groupByDispatcher) {
+    if (sectionDispatcherId === null) {
+      scoped = block.loads.filter((l) => !l.dispatcherId);
+    } else {
+      scoped = block.loads;
+    }
+    if (!scoped.length) {
+      if (sectionDispatcherId === null) return [null];
+      return [];
+    }
+  }
+
+  return [...scoped].sort((a, b) => {
+    const aDate = a.puDate ?? "";
+    const bDate = b.puDate ?? "";
+    if (aDate !== bDate) return aDate.localeCompare(bDate);
+    return (a.loadNumber ?? "").localeCompare(b.loadNumber ?? "");
+  });
+}
+
+/** Unique drivers that have at least one row on the status board. */
+export function collectStatusboardVisibleDrivers(
+  sections: DispatcherDriverGroup[],
+  groupByDispatcher: boolean,
+): DriverTodayBlock[] {
+  const seen = new Map<string, DriverTodayBlock>();
+  for (const section of sections) {
+    for (const block of section.drivers) {
+      const loads = loadsForStatusboardSection(
+        block,
+        section.dispatcherId,
+        groupByDispatcher,
+      );
+      if (!loads.length) continue;
+      if (!seen.has(block.driver.id)) seen.set(block.driver.id, block);
+    }
+  }
+  return [...seen.values()];
+}
+
+export function countStatusboardVisibleRows(
+  sections: DispatcherDriverGroup[],
+  groupByDispatcher: boolean,
+  removedLoadIds?: Set<string>,
+): { drivers: number; rows: number } {
+  const driverIds = new Set<string>();
+  let rows = 0;
+  for (const section of sections) {
+    for (const { block, load } of buildStatusBoardSectionRows(
+      section.drivers,
+      section.dispatcherId,
+      groupByDispatcher,
+      loadsForStatusboardSection,
+    )) {
+      if (load != null && load.id && removedLoadIds?.has(load.id)) continue;
+      rows += 1;
+      driverIds.add(block.driver.id);
+    }
+  }
+  return { drivers: driverIds.size, rows };
+}
 
 /** Status-board row still on factory defaults — show NEW styling until edited. */
 export function isStatusBoardNewLoad(load: {

@@ -263,6 +263,8 @@ export function mapPatchFieldToSheetField(field: string): SheetValidationField |
       return "rate";
     case "dispatcherId":
       return "dispatcherId";
+    case "brokerId":
+      return "broker";
     case "status":
       return "status";
     default:
@@ -326,6 +328,7 @@ export function markDraftFieldTouched(
   const set = new Set(next.get(loadId) ?? []);
   if (field === "originCity" || field === "originState") set.add("origin");
   else if (field === "destCity" || field === "destState") set.add("dest");
+  else if (field === "brokerId") set.add("brokerId");
   else set.add(field);
   next.set(loadId, set);
   return next;

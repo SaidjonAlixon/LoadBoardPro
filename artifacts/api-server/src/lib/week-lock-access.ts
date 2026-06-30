@@ -9,7 +9,7 @@ import {
 } from "@workspace/db";
 import { and, eq, gt, desc } from "drizzle-orm";
 import type { Response } from "express";
-import { normalizeWeekStart, addDays, getThisWeekStart, todayIsoLocal } from "./week-calendar";
+import { normalizeWeekStart, addDays, getThisWeekStart, todayIsoLocal, getEtParts, isSameEtDay, formatInEt } from "./week-calendar";
 
 export type WeekLockInfo = {
   isLocked: boolean;
@@ -29,6 +29,7 @@ export async function ensureBoardWeekRow(weekStart: string) {
 }
 
 export async function getWeekLockInfo(weekStart: string): Promise<WeekLockInfo> {
+  await applyDueScheduledLocks();
   const row = await ensureBoardWeekRow(weekStart);
   return {
     isLocked: row?.isLocked ?? false,
@@ -94,6 +95,7 @@ export async function denyIfDispatcherLockedWeek(
 
 export async function lockWeek(weekStart: string, lockedBy: string | null): Promise<void> {
   const mon = normalizeWeekStart(weekStart);
+  await revokeAllWeekGrants(mon);
   await ensureBoardWeekRow(mon);
   await db
     .update(boardWeeksTable)
@@ -108,6 +110,7 @@ export async function lockWeek(weekStart: string, lockedBy: string | null): Prom
 
 export async function unlockWeek(weekStart: string): Promise<void> {
   const mon = normalizeWeekStart(weekStart);
+  await revokeAllWeekGrants(mon);
   await ensureBoardWeekRow(mon);
   await db
     .update(boardWeeksTable)
@@ -120,13 +123,22 @@ export async function unlockWeek(weekStart: string): Promise<void> {
     .where(eq(boardWeeksTable.weekStart, mon));
 }
 
-export async function scheduleWeekLock(weekStart: string, scheduledLockAt: Date): Promise<void> {
+export async function scheduleWeekLock(
+  weekStart: string,
+  scheduledLockAt: Date,
+  lockedBy: string | null = null,
+): Promise<WeekLockInfo> {
   const mon = normalizeWeekStart(weekStart);
   await ensureBoardWeekRow(mon);
-  await db
-    .update(boardWeeksTable)
-    .set({ scheduledLockAt })
-    .where(eq(boardWeeksTable.weekStart, mon));
+  if (scheduledLockAt.getTime() <= Date.now()) {
+    await lockWeek(mon, lockedBy);
+  } else {
+    await db
+      .update(boardWeeksTable)
+      .set({ scheduledLockAt })
+      .where(eq(boardWeeksTable.weekStart, mon));
+  }
+  return getWeekLockInfo(mon);
 }
 
 export async function clearWeekSchedule(weekStart: string): Promise<void> {
@@ -150,28 +162,103 @@ export async function getOrCreateLockSettings() {
   return row!;
 }
 
+export type GrantDurationOptions = {
+  durationMinutes?: number;
+  durationHours?: number;
+  note?: string;
+};
+
+function resolveGrantMinutes(options: GrantDurationOptions): number {
+  if (typeof options.durationMinutes === "number" && options.durationMinutes >= 1) {
+    return Math.min(Math.floor(options.durationMinutes), 24 * 60);
+  }
+  const hours = options.durationHours ?? 1;
+  return Math.min(Math.max(Math.floor(hours * 60), 1), 24 * 60);
+}
+
+function formatGrantExpiry(expiresAt: Date): string {
+  return formatInEt(expiresAt, "en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+export async function revokeAllWeekGrants(weekStart: string): Promise<void> {
+  const mon = normalizeWeekStart(weekStart);
+  const now = new Date();
+  const active = await db
+    .select()
+    .from(weekEditGrantsTable)
+    .where(eq(weekEditGrantsTable.weekStart, mon));
+  if (!active.length) return;
+
+  await db.delete(weekEditGrantsTable).where(eq(weekEditGrantsTable.weekStart, mon));
+
+  for (const grant of active) {
+    if (grant.expiresAt <= now) continue;
+    await db.insert(notificationsTable).values({
+      id: crypto.randomUUID(),
+      userId: grant.userId,
+      text: `Edit access for week ${mon} was revoked.`,
+      kind: "week_edit_revoked",
+    });
+  }
+}
+
+export async function revokeWeekEditGrant(grantId: string): Promise<boolean> {
+  const grant = await db.query.weekEditGrantsTable.findFirst({
+    where: eq(weekEditGrantsTable.id, grantId),
+  });
+  if (!grant) return false;
+
+  await db.delete(weekEditGrantsTable).where(eq(weekEditGrantsTable.id, grantId));
+
+  if (grant.expiresAt > new Date()) {
+    try {
+      await db.insert(notificationsTable).values({
+        id: crypto.randomUUID(),
+        userId: grant.userId,
+        text: `Edit access for week ${grant.weekStart} was revoked.`,
+        kind: "week_edit_revoked",
+      });
+    } catch {
+      /* notification is best-effort */
+    }
+  }
+  return true;
+}
+
 export async function grantWeekEditAccess(
   weekStart: string,
   userIds: string[],
   grantedBy: string,
-  durationHours: number,
-  note?: string,
+  options: GrantDurationOptions,
 ): Promise<void> {
   const mon = normalizeWeekStart(weekStart);
-  const expiresAt = new Date(Date.now() + durationHours * 60 * 60 * 1000);
+  const minutes = resolveGrantMinutes(options);
+  const expiresAt = new Date(Date.now() + minutes * 60 * 1000);
+  const expiryLabel = formatGrantExpiry(expiresAt);
+
   for (const userId of userIds) {
+    await db
+      .delete(weekEditGrantsTable)
+      .where(and(eq(weekEditGrantsTable.weekStart, mon), eq(weekEditGrantsTable.userId, userId)));
+
     await db.insert(weekEditGrantsTable).values({
       id: crypto.randomUUID(),
       weekStart: mon,
       userId,
       grantedBy,
       expiresAt,
-      note: note ?? null,
+      note: options.note ?? null,
     });
     await db.insert(notificationsTable).values({
       id: crypto.randomUUID(),
       userId,
-      text: `You may edit loads for week ${mon} until ${expiresAt.toLocaleString()}. Make changes before access expires.`,
+      text: `You may edit loads for week ${mon} for ${minutes} minute(s) — until ${expiryLabel} ET.`,
       kind: "week_edit_granted",
     });
   }
@@ -201,10 +288,8 @@ export async function notifyAccountants(text: string, loadId?: string) {
   }
 }
 
-export async function processScheduledAndRolloverLocks(): Promise<void> {
+export async function applyDueScheduledLocks(): Promise<void> {
   const now = new Date();
-  const settings = await getOrCreateLockSettings();
-
   const rows = await db.select().from(boardWeeksTable).where(eq(boardWeeksTable.isLocked, false));
 
   for (const row of rows) {
@@ -212,6 +297,13 @@ export async function processScheduledAndRolloverLocks(): Promise<void> {
       await lockWeek(row.weekStart, null);
     }
   }
+}
+
+export async function processScheduledAndRolloverLocks(): Promise<void> {
+  await applyDueScheduledLocks();
+
+  const now = new Date();
+  const settings = await getOrCreateLockSettings();
 
   if (!settings.autoLockOnWeekRollover) return;
 
@@ -219,12 +311,11 @@ export async function processScheduledAndRolloverLocks(): Promise<void> {
   const thisMonday = getThisWeekStart();
   if (today !== thisMonday) return;
 
-  const hour = now.getHours();
-  const minute = now.getMinutes();
-  if (hour !== 0 || minute > 10) return;
+  const et = getEtParts(now);
+  if (et.hour !== 0 || et.minute > 10) return;
 
   const lastRun = settings.lastRolloverLockAt;
-  if (lastRun && toSameLocalDay(lastRun, now)) return;
+  if (lastRun && isSameEtDay(lastRun, now)) return;
 
   const prevWeek = addDays(thisMonday, -7);
   await lockWeek(prevWeek, null);
@@ -233,14 +324,6 @@ export async function processScheduledAndRolloverLocks(): Promise<void> {
     .update(weekLockSettingsTable)
     .set({ lastRolloverLockAt: now })
     .where(eq(weekLockSettingsTable.id, "default"));
-}
-
-function toSameLocalDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear()
-    && a.getMonth() === b.getMonth()
-    && a.getDate() === b.getDate()
-  );
 }
 
 export async function listPendingRequests() {

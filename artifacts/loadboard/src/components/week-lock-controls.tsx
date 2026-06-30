@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,8 +13,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Lock, LockOpen, Clock, Users } from "lucide-react";
+import { datetimeLocalToIso, toDatetimeLocalValue } from "@/lib/scheduled-datetime";
+import { APP_TIMEZONE, formatInEt } from "@/lib/date-range";
 import { toast } from "sonner";
 import { WeekGrantDialog } from "@/components/week-grant-dialog";
+import { WeekActiveGrants } from "@/components/week-active-grants";
 import type { User } from "@workspace/api-client-react";
 
 type Props = {
@@ -47,10 +51,24 @@ export function WeekLockControls({
   const [grantOpen, setGrantOpen] = useState(false);
   const [scheduleAt, setScheduleAt] = useState(() => {
     const d = new Date();
-    d.setHours(d.getHours() + 1, 0, 0, 0);
-    return d.toISOString().slice(0, 16);
+    d.setTime(d.getTime() + 60 * 60 * 1000);
+    return toDatetimeLocalValue(d.toISOString());
   });
   const [autoRollover, setAutoRollover] = useState(autoLockOnWeekRollover);
+
+  const { data: activeGrants = [] } = useQuery<{ id: string }[]>({
+    queryKey: ["/api/week-locks/grants", weekStart],
+    enabled: isLocked,
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/week-locks/grants?weekStart=${encodeURIComponent(weekStart)}`,
+        { credentials: "include" },
+      );
+      if (!res.ok) throw new Error("Failed");
+      return res.json();
+    },
+    refetchInterval: 5_000,
+  });
 
   const toggleLock = async () => {
     setBusy(true);
@@ -81,12 +99,12 @@ export function WeekLockControls({
   const saveSchedule = async () => {
     setBusy(true);
     try {
-      await apiJson("/api/week-locks/schedule", {
+      const data = (await apiJson("/api/week-locks/schedule", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ weekStart, scheduledLockAt: new Date(scheduleAt).toISOString() }),
-      });
-      toast.success(t("weekLock.scheduleSaved"));
+        body: JSON.stringify({ weekStart, scheduledLockAt: datetimeLocalToIso(scheduleAt) }),
+      })) as { isLocked?: boolean };
+      toast.success(data.isLocked ? t("weekLock.locked") : t("weekLock.scheduleSaved"));
       setScheduleOpen(false);
       onChanged();
     } catch (e) {
@@ -129,19 +147,25 @@ export function WeekLockControls({
 
   return (
     <>
-      <div className="flex items-center gap-1.5 shrink-0">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className={`sheet-toolbar-btn ${isLocked ? "sheet-toolbar-btn--danger" : "sheet-toolbar-btn--lock"}`}
-          disabled={busy}
-          onClick={toggleLock}
-          title={isLocked ? t("weekLock.unlockWeek") : t("weekLock.lockWeek")}
-        >
-          {isLocked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
-          {isLocked ? t("weekLock.unlock") : t("weekLock.lock")}
-        </Button>
+      <div className="flex flex-wrap items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className={`sheet-toolbar-btn ${isLocked ? "sheet-toolbar-btn--danger" : "sheet-toolbar-btn--lock"}`}
+            disabled={busy}
+            onClick={toggleLock}
+            title={isLocked ? t("weekLock.unlockWeek") : t("weekLock.lockWeek")}
+          >
+            {isLocked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
+            {isLocked ? t("weekLock.unlock") : t("weekLock.lock")}
+            {isLocked && activeGrants.length > 0 && (
+              <span className="ml-1 rounded bg-emerald-600 px-1.5 py-0.5 text-[9px] font-bold text-white">
+                {activeGrants.length}
+              </span>
+            )}
+          </Button>
         <Button
           type="button"
           variant="outline"
@@ -165,13 +189,33 @@ export function WeekLockControls({
         >
           <Users className="h-3.5 w-3.5" />
           {t("weekLock.grant")}
+          {activeGrants.length > 0 && (
+            <span className="ml-1 rounded bg-emerald-600 px-1.5 py-0.5 text-[9px] font-bold text-white">
+              {activeGrants.length}
+            </span>
+          )}
         </Button>
+        </div>
+
+        <WeekActiveGrants
+          weekStart={weekStart}
+          isLocked={isLocked}
+          t={t}
+          onChanged={onChanged}
+        />
       </div>
 
       {scheduledLockAt && !isLocked && (
         <span className="text-[10px] text-muted-foreground whitespace-nowrap hidden xl:inline">
           {t("weekLock.scheduledAt", {
-            time: new Date(scheduledLockAt).toLocaleString(),
+            time: formatInEt(scheduledLockAt, "en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+              hour12: true,
+            }),
           })}
           <button
             type="button"
